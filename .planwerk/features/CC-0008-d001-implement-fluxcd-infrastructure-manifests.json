@@ -1,0 +1,617 @@
+{
+  "feature_id": "CC-0008",
+  "title": "D001: Implement FluxCD infrastructure manifests",
+  "slug": "d001-implement-fluxcd-infrastructure-manifests",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "**Feature ID:** CC-0008\n**Size:** 🔨 medium\n**Category:** infrastructure\n**Priority:** high\n\n---\n\n## Open Questions\n\nAll three original questions have been answered by the user:\n\n- **Q1 (Memcached Operator Helm chart)** → OCI registry at GHCR: `oci://ghcr.io/c5c3/charts` via a `c5c3-charts` HelmRepository (confirmed by `architecture/docs/09-implementation/07-ci-cd-and-packaging.md` lines 305–354)\n- **Q2 (Default ClusterIssuer)** → Self-signed ClusterIssuer\n- **Q3 (Kustomization includes infrastructure/)** → Yes, include `../infrastructure/`\n\n**No remaining open questions.**\n\n---\n\n## Summary\n\nCreate the FluxCD infrastructure deployment manifests under `deploy/` for the CobaltCore development stack. This includes HelmRepository sources for five upstream registries (cert-manager, mariadb-operator, ESO, OpenBao, and the C5C3 OCI chart registry), HelmRelease definitions for four operators (cert-manager with a self-signed ClusterIssuer, MariaDB Operator, Memcached Operator, ESO) with production-ready values and dependency ordering, MariaDB Galera and Memcached instance CRs, and a Kustomize integration file. OpenBao's HelmRelease is excluded (CC-0009 scope).\n\n## Scope\n\n**Included:**\n- 5 HelmRepository CRs in `deploy/flux-system/sources/` — `cert-manager` (`https://charts.jetstack.io`), `mariadb-operator` (`https://mariadb-operator.github.io/mariadb-operator`), `external-secrets` (`https://charts.external-secrets.io`), `openbao` (`https://openbao.github.io/openbao-helm`), `c5c3-charts` (`oci://ghcr.io/c5c3/charts`, type: `oci`)\n- 4 HelmRelease CRs in `deploy/flux-system/releases/` — cert-manager, MariaDB Operator, Memcached Operator, ESO — with `dependsOn` chain and production values (`interval: 30m`, `install.crds: CreateReplace`, `upgrade.crds: CreateReplace`, `upgrade.remediation.retries: 3`)\n- Self-signed ClusterIssuer bundled with cert-manager HelmRelease (post-install)\n- MariaDB Galera CR (`deploy/infrastructure/mariadb.yaml`) — `k8s.mariadb.com/v1alpha1`, 3 replicas, Galera enabled, MaxScale, metrics\n- Memcached CR (`deploy/infrastructure/memcached.yaml`) — `cache.c5c3.io/v1alpha1`, 3 replicas, anti-affinity, PDB, monitoring\n- `deploy/flux-system/kustomization.yaml` referencing `sources/`, `releases/`, and `../infrastructure/`\n\n**Excluded:**\n- OpenBao HelmRelease and bootstrap scripts (CC-0009)\n- ESO ClusterSecretStore and ExternalSecret CRs (CC-0009)\n- `make deploy-infra` / `make teardown-infra` targets (CC-0010)\n- Chainsaw E2E tests for infrastructure health (CC-0010)\n- Valkey and RabbitMQ operators (YAGNI for Keystone-first strategy)\n- Keystone Operator HelmRelease (CC-0017)\n- Production OpenBao PKI ClusterIssuer (CC-0009)\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph sources[\"deploy/flux-system/sources/\"]\n        S1[\"HelmRepo: cert-manager\\njetstack.io\"]\n        S2[\"HelmRepo: mariadb-operator\\nGitHub Pages\"]\n        S3[\"HelmRepo: external-secrets\\nexternal-secrets.io\"]\n        S4[\"HelmRepo: openbao\\nGitHub Pages\"]\n        S5[\"HelmRepo: c5c3-charts\\noci://ghcr.io/c5c3/charts\"]\n    end\n\n    subgraph releases[\"deploy/flux-system/releases/\"]\n        R1[\"HelmRelease: cert-manager\\n+ self-signed ClusterIssuer\"]\n        R2[\"HelmRelease: mariadb-operator\"]\n        R3[\"HelmRelease: external-secrets\"]\n        R4[\"HelmRelease: memcached-operator\"]\n    end\n\n    subgraph infra[\"deploy/infrastructure/\"]\n        I1[\"MariaDB Galera CR\\n3 replicas, MaxScale\"]\n        I2[\"Memcached CR\\n3 replicas, PDB\"]\n    end\n\n    K[\"deploy/flux-system/kustomization.yaml\"]\n\n    S1 --> R1\n    S2 --> R2\n    S3 --> R3\n    S5 --> R4\n\n    R2 -->|\"dependsOn\"| R1\n    R3 -->|\"dependsOn\"| R1\n    R4 -->|\"dependsOn\"| R1\n\n    R2 -.->|\"operator manages\"| I1\n    R4 -.->|\"operator manages\"| I2\n\n    K -->|\"references\"| sources\n    K -->|\"references\"| releases\n    K -->|\"references\"| infra\n```\n\n```mermaid\nflowchart LR\n    CM[\"cert-manager\\n#40;base layer#41;\"] --> MDB[\"MariaDB Operator\"]\n    CM --> ESO[\"External Secrets Operator\"]\n    CM --> MC[\"Memcached Operator\"]\n    MDB -.-> MDBCR[\"MariaDB Galera CR\"]\n    MC -.-> MCCR[\"Memcached CR\"]\n```\n\n## Key Components\n\n- **`deploy/flux-system/sources/cert-manager.yaml`**: HelmRepository — `https://charts.jetstack.io`, `interval: 1h`, API `source.toolkit.fluxcd.io/v1`\n- **`deploy/flux-system/sources/mariadb-operator.yaml`**: HelmRepository — `https://mariadb-operator.github.io/mariadb-operator`, `interval: 1h`\n- **`deploy/flux-system/sources/external-secrets.yaml`**: HelmRepository — `https://charts.external-secrets.io`, `interval: 1h`\n- **`deploy/flux-system/sources/openbao.yaml`**: HelmRepository — `https://openbao.github.io/openbao-helm`, `interval: 1h`\n- **`deploy/flux-system/sources/c5c3-charts.yaml`**: HelmRepository — `oci://ghcr.io/c5c3/charts`, `type: oci`, `interval: 1h` (serves memcached-operator chart)\n- **`deploy/flux-system/releases/cert-manager.yaml`**: HelmRelease in `cert-manager` namespace, chart version `>=1.0.0`, no dependencies (base layer), includes post-install self-signed `ClusterIssuer`\n- **`deploy/flux-system/releases/mariadb-operator.yaml`**: HelmRelease in `mariadb-system` namespace, chart version `>=0.30.0 <1.0.0`, `dependsOn: cert-manager`, metrics + webhook enabled\n- **`deploy/flux-system/releases/external-secrets.yaml`**: HelmRelease in `external-secrets` namespace, chart version `>=0.9.0`, `dependsOn: cert-manager`\n- **`deploy/flux-system/releases/memcached-operator.yaml`**: HelmRelease in `memcached-system` namespace, chart `memcached-operator` from `c5c3-charts` sourceRef, chart version `>=0.1.0 <1.0.0`, `dependsOn: cert-manager`\n- **`deploy/infrastructure/mariadb.yaml`**: MariaDB CR (`openstack-db`) in `openstack` namespace — `k8s.mariadb.com/v1alpha1`, Galera 3-replica, MaxScale 2-replica, 100Gi `ceph-rbd`, metrics enabled\n- **`deploy/infrastructure/memcached.yaml`**: Memcached CR (`openstack-memcached`) in `openstack` namespace — `cache.c5c3.io/v1alpha1`, 3 replicas, 1024MB, 4096 max connections, soft anti-affinity, PDB minAvailable 2, monitoring exporter\n- **`deploy/flux-system/kustomization.yaml`**: Kustomize file referencing `sources/`, `releases/`, and `../infrastructure/` for single-command `kubectl apply -k deploy/flux-system/` deployment\n\n### Corrections from codebase research\n\nTwo details refined from the user's draft:\n\n1. **Memcached CRD API group**: `cache.c5c3.io/v1alpha1` (not `memcached.c5c3.io/v1alpha1`) — confirmed from the fake CRD at `internal/common/testutil/fake_crds/memcached-operator/memcached.yaml` and the envtest integration test at `internal/common/testutil/envtest/integration_test.go:48`.\n\n2. **Memcached-operator HelmRepository**: Named `c5c3-charts` (not a separate `memcached-operator` repo) pointing to `oci://ghcr.io/c5c3/charts` with `type: oci` — this is the shared OCI registry for all C5C3-owned charts, per `architecture/docs/09-implementation/07-ci-cd-and-packaging.md` lines 305–354. The HelmRelease references this via `sourceRef.name: c5c3-charts`.",
+  "stories": [
+    {
+      "title": "Platform engineer creates HelmRepository sources for upstream chart registries",
+      "role": "platform engineer",
+      "want": "to define HelmRepository CRs for all required upstream Helm chart registries (cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts) in deploy/flux-system/sources/",
+      "so_that": "FluxCD can pull charts from the correct registries and HelmRelease CRs can reference them",
+      "criteria": [
+        "5 HelmRepository YAML files exist under deploy/flux-system/sources/ with correct names: cert-manager.yaml, mariadb-operator.yaml, external-secrets.yaml, openbao.yaml, c5c3-charts.yaml",
+        "All HelmRepository CRs use apiVersion source.toolkit.fluxcd.io/v1 and kind HelmRepository",
+        "All HelmRepository CRs have namespace flux-system and interval 1h",
+        "c5c3-charts.yaml uses spec.type: oci and url: oci://ghcr.io/c5c3/charts",
+        "All files include SPDX Apache-2.0 license headers"
+      ]
+    },
+    {
+      "title": "Platform engineer deploys cert-manager as the base infrastructure layer with a self-signed ClusterIssuer",
+      "role": "platform engineer",
+      "want": "to deploy cert-manager via HelmRelease with a self-signed ClusterIssuer bundled in the same manifest",
+      "so_that": "TLS certificate management is available for all dependent operators and a default issuer exists for development environments",
+      "criteria": [
+        "deploy/flux-system/releases/cert-manager.yaml contains a HelmRelease CR targeting the cert-manager namespace",
+        "HelmRelease references sourceRef name cert-manager (HelmRepository) in namespace flux-system",
+        "Chart version constraint is >=1.0.0",
+        "HelmRelease has no dependsOn (base layer)",
+        "Same file contains a self-signed ClusterIssuer CR (cert-manager.io/v1) separated by --- document separator",
+        "HelmRelease includes install.crds: CreateReplace, upgrade.crds: CreateReplace, upgrade.remediation.retries: 3"
+      ]
+    },
+    {
+      "title": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "role": "platform engineer",
+      "want": "to deploy MariaDB Operator, External Secrets Operator, and Memcached Operator via HelmRelease CRs that depend on cert-manager",
+      "so_that": "operators are installed in the correct order and CRDs are available before instance CRs are applied",
+      "criteria": [
+        "deploy/flux-system/releases/ contains mariadb-operator.yaml, external-secrets.yaml, memcached-operator.yaml",
+        "All three HelmRelease CRs have dependsOn referencing cert-manager in cert-manager namespace",
+        "MariaDB Operator targets mariadb-system namespace with chart version >=0.30.0 <1.0.0 and enables metrics + webhook",
+        "ESO targets external-secrets namespace with chart version >=0.9.0",
+        "Memcached Operator targets memcached-system namespace with chart version >=0.1.0 <1.0.0 and sourceRef c5c3-charts",
+        "All HelmReleases use interval 30m, install.crds CreateReplace, upgrade.crds CreateReplace, upgrade.remediation.retries 3"
+      ]
+    },
+    {
+      "title": "Platform engineer provisions a MariaDB Galera cluster for OpenStack services",
+      "role": "platform engineer",
+      "want": "to deploy a MariaDB Galera CR in the openstack namespace with HA configuration",
+      "so_that": "OpenStack services (starting with Keystone) have a production-ready database backend",
+      "criteria": [
+        "deploy/infrastructure/mariadb.yaml contains a MariaDB CR with apiVersion k8s.mariadb.com/v1alpha1",
+        "CR name is openstack-db in namespace openstack",
+        "spec.replicas is 3 with spec.galera.enabled true",
+        "spec.maxScale.enabled is true with spec.maxScale.replicas 2",
+        "spec.storage.size is 100Gi with storageClassName ceph-rbd",
+        "spec.metrics.enabled is true"
+      ]
+    },
+    {
+      "title": "Platform engineer provisions a Memcached cluster for OpenStack session caching",
+      "role": "platform engineer",
+      "want": "to deploy a Memcached CR in the openstack namespace with HA, anti-affinity, and monitoring",
+      "so_that": "OpenStack services have a production-ready distributed cache with disruption protection",
+      "criteria": [
+        "deploy/infrastructure/memcached.yaml contains a Memcached CR with apiVersion cache.c5c3.io/v1alpha1 (NOT memcached.c5c3.io)",
+        "CR name is openstack-memcached in namespace openstack",
+        "spec.replicas is 3 with spec.config.maxMemoryMB 1024 and spec.config.maxConnections 4096",
+        "spec.highAvailability.podAntiAffinity is soft and spec.highAvailability.podDisruptionBudget.minAvailable is 2",
+        "spec.monitoring.enabled is true with exporter image prom/memcached-exporter:latest",
+        "spec.resources.requests includes memory 1Gi and cpu 500m"
+      ]
+    },
+    {
+      "title": "Platform engineer deploys all infrastructure manifests via single kustomize command",
+      "role": "platform engineer",
+      "want": "to apply all FluxCD sources, releases, and infrastructure CRs with kubectl apply -k deploy/flux-system/",
+      "so_that": "the entire infrastructure stack can be deployed or updated with one command",
+      "criteria": [
+        "deploy/flux-system/kustomization.yaml exists with apiVersion kustomize.config.k8s.io/v1beta1",
+        "Kustomization resources list includes all 5 source files, all 4 release files, and both infrastructure CR files",
+        "kustomize build deploy/flux-system/ succeeds without errors",
+        "All 12 manifest files (5 sources + 4 releases + 2 infrastructure CRs + 1 ClusterIssuer) are included in the build output"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "HelmRepository CRs SHALL use apiVersion source.toolkit.fluxcd.io/v1 with correct source URLs and intervals",
+      "priority": "SHALL",
+      "rationale": "FluxCD source controller requires correct API version and valid repository URLs to sync charts",
+      "scenarios": [
+        {
+          "name": "Standard HTTPS HelmRepository created correctly",
+          "when": "a HelmRepository CR for cert-manager is applied",
+          "then": "the CR specifies apiVersion source.toolkit.fluxcd.io/v1, namespace flux-system, interval 1h, and url https://charts.jetstack.io",
+          "and_then": [
+            "FluxCD source controller can sync chart metadata from the repository"
+          ]
+        },
+        {
+          "name": "OCI HelmRepository created correctly",
+          "when": "a HelmRepository CR for c5c3-charts is applied",
+          "then": "the CR specifies type: oci and url: oci://ghcr.io/c5c3/charts in addition to standard fields",
+          "and_then": [
+            "FluxCD resolves OCI artifacts from GHCR"
+          ]
+        },
+        {
+          "name": "HelmRepository with invalid URL rejected",
+          "when": "a HelmRepository CR has a malformed or missing URL",
+          "then": "kubectl apply --dry-run=client rejects the manifest with a validation error",
+          "and_then": [
+            "no invalid resource is persisted to the cluster"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "HelmRelease CRs SHALL use apiVersion helm.toolkit.fluxcd.io/v2 with production-ready install/upgrade settings",
+      "priority": "SHALL",
+      "rationale": "Consistent production settings (CRD management, remediation retries, intervals) ensure reliable operator lifecycle management",
+      "scenarios": [
+        {
+          "name": "HelmRelease includes production settings",
+          "when": "any HelmRelease CR is examined",
+          "then": "it contains interval 30m, install.crds CreateReplace, upgrade.crds CreateReplace, upgrade.remediation.retries 3",
+          "and_then": [
+            "CRDs are managed during install and upgrade, and failed upgrades are retried"
+          ]
+        },
+        {
+          "name": "HelmRelease creates target namespace",
+          "when": "a HelmRelease targets a namespace that does not exist",
+          "then": "the CR includes install.createNamespace true",
+          "and_then": [
+            "the namespace is created automatically during first install"
+          ]
+        },
+        {
+          "name": "HelmRelease sourceRef matches existing HelmRepository",
+          "when": "a HelmRelease references a sourceRef",
+          "then": "the sourceRef.name matches a HelmRepository name defined in deploy/flux-system/sources/ and sourceRef.namespace is flux-system",
+          "and_then": [
+            "FluxCD can resolve the chart from the correct repository"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "HelmRelease CRs SHALL define correct dependency ordering via dependsOn with cert-manager as base layer",
+      "priority": "SHALL",
+      "rationale": "cert-manager CRDs must be available before dependent operators that use Certificate resources can be installed",
+      "scenarios": [
+        {
+          "name": "cert-manager has no dependencies (base layer)",
+          "when": "the cert-manager HelmRelease is examined",
+          "then": "it has no dependsOn field",
+          "and_then": [
+            "cert-manager is the first operator installed"
+          ]
+        },
+        {
+          "name": "Dependent operators reference cert-manager",
+          "when": "mariadb-operator, external-secrets, or memcached-operator HelmRelease is examined",
+          "then": "each has dependsOn containing name: cert-manager, namespace: cert-manager",
+          "and_then": [
+            "these operators are installed only after cert-manager is ready"
+          ]
+        },
+        {
+          "name": "No circular dependencies exist",
+          "when": "the full dependency graph of all HelmReleases is analyzed",
+          "then": "the graph is a directed acyclic graph with cert-manager as the sole root",
+          "and_then": [
+            "FluxCD can compute a valid installation order"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The cert-manager HelmRelease SHALL include a self-signed ClusterIssuer for development environments",
+      "priority": "SHALL",
+      "rationale": "A default ClusterIssuer enables TLS certificate provisioning immediately after cert-manager deployment without external CA configuration",
+      "scenarios": [
+        {
+          "name": "Self-signed ClusterIssuer is bundled",
+          "when": "deploy/flux-system/releases/cert-manager.yaml is examined",
+          "then": "the file contains a ClusterIssuer CR with apiVersion cert-manager.io/v1 and spec.selfSigned: {} separated from the HelmRelease by a --- document separator",
+          "and_then": [
+            "the ClusterIssuer is deployed alongside cert-manager"
+          ]
+        },
+        {
+          "name": "ClusterIssuer has correct metadata",
+          "when": "the ClusterIssuer CR is examined",
+          "then": "it has name selfsigned-issuer (or selfsigned-cluster-issuer) and no namespace (cluster-scoped)",
+          "and_then": [
+            "any namespace can reference this issuer"
+          ]
+        },
+        {
+          "name": "ClusterIssuer is included in kustomize build output",
+          "when": "kustomize build deploy/flux-system/ is executed",
+          "then": "the output includes both the HelmRelease and the ClusterIssuer resources",
+          "and_then": [
+            "kubectl apply -k deploys both resources"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The MariaDB Galera CR SHALL define a 3-replica HA cluster with MaxScale proxy, ceph-rbd storage, and metrics",
+      "priority": "SHALL",
+      "rationale": "OpenStack services require a production-grade database with synchronous replication, automatic failover, and observability",
+      "scenarios": [
+        {
+          "name": "MariaDB CR has correct API version and identity",
+          "when": "deploy/infrastructure/mariadb.yaml is examined",
+          "then": "it contains a MariaDB CR with apiVersion k8s.mariadb.com/v1alpha1, name openstack-db, namespace openstack",
+          "and_then": [
+            "the CR matches the MariaDB Operator's expected schema"
+          ]
+        },
+        {
+          "name": "Galera replication is enabled with 3 replicas",
+          "when": "the MariaDB CR spec is examined",
+          "then": "spec.replicas is 3 and spec.galera.enabled is true",
+          "and_then": [
+            "synchronous multi-master replication is active across 3 nodes"
+          ]
+        },
+        {
+          "name": "MaxScale proxy, storage, and metrics are configured",
+          "when": "the MariaDB CR spec is examined",
+          "then": "spec.maxScale.enabled is true with replicas 2, spec.storage.size is 100Gi with storageClassName ceph-rbd, spec.metrics.enabled is true",
+          "and_then": [
+            "load balancing, persistent storage, and Prometheus scraping are configured"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The Memcached CR SHALL define a 3-replica HA cluster with soft anti-affinity, PDB, resource requests, and monitoring",
+      "priority": "SHALL",
+      "rationale": "OpenStack session caching requires resilient distributed cache with disruption protection and observability",
+      "scenarios": [
+        {
+          "name": "Memcached CR uses correct API group",
+          "when": "deploy/infrastructure/memcached.yaml is examined",
+          "then": "it contains a Memcached CR with apiVersion cache.c5c3.io/v1alpha1 (NOT memcached.c5c3.io), name openstack-memcached, namespace openstack",
+          "and_then": [
+            "the CR matches the Memcached Operator's registered CRD group"
+          ]
+        },
+        {
+          "name": "HA configuration with anti-affinity and PDB",
+          "when": "the Memcached CR spec is examined",
+          "then": "spec.replicas is 3, spec.highAvailability.podAntiAffinity is soft, spec.highAvailability.podDisruptionBudget.minAvailable is 2",
+          "and_then": [
+            "pods are spread across nodes and at least 2 remain available during disruptions"
+          ]
+        },
+        {
+          "name": "Resource requests, cache config, and monitoring are set",
+          "when": "the Memcached CR spec is examined",
+          "then": "spec.config.maxMemoryMB is 1024, spec.config.maxConnections is 4096, spec.resources.requests.memory is 1Gi and cpu 500m, spec.monitoring.enabled is true with exporter image",
+          "and_then": [
+            "cache is sized for OpenStack workloads with Prometheus metrics exposed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The Kustomization file SHALL aggregate all manifests from sources/, releases/, and ../infrastructure/ for single-command deployment",
+      "priority": "SHALL",
+      "rationale": "A single kustomize entry point enables reproducible deployment of the entire infrastructure stack",
+      "scenarios": [
+        {
+          "name": "Kustomization lists all manifest files",
+          "when": "deploy/flux-system/kustomization.yaml is examined",
+          "then": "the resources list includes all 5 source files (sources/*.yaml), all 4 release files (releases/*.yaml), and both infrastructure files (../infrastructure/*.yaml)",
+          "and_then": [
+            "no manifest is omitted from the deployment"
+          ]
+        },
+        {
+          "name": "kustomize build succeeds",
+          "when": "kustomize build deploy/flux-system/ is executed",
+          "then": "the command exits with status 0 and outputs valid multi-document YAML containing all resources",
+          "and_then": [
+            "the output can be piped to kubectl apply"
+          ]
+        },
+        {
+          "name": "Adding a new manifest requires only one line change",
+          "when": "a new HelmRelease (e.g., OpenBao in CC-0009) needs to be added",
+          "then": "only the kustomization.yaml resources list needs a new entry",
+          "and_then": [
+            "the manifest structure is extensible without restructuring"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "All manifest files SHALL include the SPDX Apache-2.0 license header matching the project convention",
+      "priority": "SHALL",
+      "rationale": "License compliance requires consistent SPDX headers on all source files per project convention",
+      "scenarios": [
+        {
+          "name": "YAML files have correct SPDX header",
+          "when": "any YAML file under deploy/ is examined",
+          "then": "the first 3 lines are: '# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company', '#', '# SPDX-License-Identifier: Apache-2.0'",
+          "and_then": [
+            "REUSE compliance checks pass"
+          ]
+        },
+        {
+          "name": "SPDX header precedes YAML content",
+          "when": "a YAML file is parsed",
+          "then": "the SPDX header lines are comments and do not affect YAML parsing",
+          "and_then": [
+            "kubectl apply and kustomize build ignore the header comments"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create deploy/flux-system/sources/ with 5 HelmRepository CRs (CC-0008, REQ-001, REQ-008)",
+      "description": "Create the directory deploy/flux-system/sources/ and 5 HelmRepository YAML files. Each file follows the same structure: apiVersion source.toolkit.fluxcd.io/v1, kind HelmRepository, metadata.name and metadata.namespace flux-system, spec.interval 1h, spec.url. Files: cert-manager.yaml (url: https://charts.jetstack.io), mariadb-operator.yaml (url: https://mariadb-operator.github.io/mariadb-operator), external-secrets.yaml (url: https://charts.external-secrets.io), openbao.yaml (url: https://openbao.github.io/openbao-helm), c5c3-charts.yaml (url: oci://ghcr.io/c5c3/charts, spec.type: oci). All files include SPDX header. Remove deploy/.gitkeep after creating real files. Pattern reference: architecture/docs/09-implementation/07-ci-cd-and-packaging.md lines 310-318 and architecture/docs/09-implementation/09-openbao-deployment.md lines 10-16.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Create cert-manager HelmRelease with self-signed ClusterIssuer (CC-0008, REQ-002, REQ-003, REQ-004, REQ-008)",
+      "description": "Create deploy/flux-system/releases/cert-manager.yaml containing two YAML documents separated by ---. Document 1: HelmRelease with apiVersion helm.toolkit.fluxcd.io/v2, metadata.name cert-manager, metadata.namespace cert-manager, spec.interval 30m, chart.spec.chart cert-manager, chart.spec.version '>=1.0.0', chart.spec.sourceRef (kind HelmRepository, name cert-manager, namespace flux-system), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3. No dependsOn (base layer). Document 2: ClusterIssuer with apiVersion cert-manager.io/v1, metadata.name selfsigned-cluster-issuer, spec.selfSigned {}. Include SPDX header. Pattern reference: architecture/docs/05-deployment/01-gitops-fluxcd/03-helm-deployment.md.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Create MariaDB Operator HelmRelease (CC-0008, REQ-002, REQ-003, REQ-008)",
+      "description": "Create deploy/flux-system/releases/mariadb-operator.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name mariadb-operator, metadata.namespace mariadb-system, spec.interval 30m, chart.spec.chart mariadb-operator, chart.spec.version '>=0.30.0 <1.0.0', sourceRef (kind HelmRepository, name mariadb-operator, namespace flux-system), values.metrics.enabled true, values.webhook.enabled true, install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header. Exact pattern from architecture/docs/05-deployment/01-gitops-fluxcd/03-helm-deployment.md lines 17-44.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Create External Secrets Operator HelmRelease (CC-0008, REQ-002, REQ-003, REQ-008)",
+      "description": "Create deploy/flux-system/releases/external-secrets.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name external-secrets, metadata.namespace external-secrets, spec.interval 30m, chart.spec.chart external-secrets, chart.spec.version '>=0.9.0', sourceRef (kind HelmRepository, name external-secrets, namespace flux-system), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.4",
+      "title": "Create Memcached Operator HelmRelease (CC-0008, REQ-002, REQ-003, REQ-008)",
+      "description": "Create deploy/flux-system/releases/memcached-operator.yaml with HelmRelease: apiVersion helm.toolkit.fluxcd.io/v2, metadata.name memcached-operator, metadata.namespace memcached-system, spec.interval 30m, chart.spec.chart memcached-operator, chart.spec.version '>=0.1.0 <1.0.0', sourceRef (kind HelmRepository, name c5c3-charts, namespace flux-system) — NOTE: sourceRef name is c5c3-charts (shared OCI registry, NOT a separate memcached-operator repo), install.crds CreateReplace, install.createNamespace true, upgrade.crds CreateReplace, upgrade.remediation.retries 3, dependsOn [{name: cert-manager, namespace: cert-manager}]. Include SPDX header. Pattern reference: architecture/docs/09-implementation/07-ci-cd-and-packaging.md lines 321-353.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Create MariaDB Galera CR for OpenStack database (CC-0008, REQ-005, REQ-008)",
+      "description": "Create deploy/infrastructure/mariadb.yaml with MariaDB CR: apiVersion k8s.mariadb.com/v1alpha1, kind MariaDB, metadata.name openstack-db, metadata.namespace openstack, spec.replicas 3, spec.galera.enabled true, spec.maxScale.enabled true, spec.maxScale.replicas 2, spec.storage.size 100Gi, spec.storage.storageClassName ceph-rbd, spec.metrics.enabled true. Include SPDX header. Reference: architecture/docs/03-components/01-control-plane/06-infrastructure-operators.md MariaDB section and fake CRD at internal/common/testutil/fake_crds/mariadb-operator/mariadb.yaml for API group confirmation.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-005",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Create Memcached CR for OpenStack session caching (CC-0008, REQ-006, REQ-008)",
+      "description": "Create deploy/infrastructure/memcached.yaml with Memcached CR: apiVersion cache.c5c3.io/v1alpha1 (CRITICAL: use cache.c5c3.io NOT memcached.c5c3.io — confirmed by fake CRD at internal/common/testutil/fake_crds/memcached-operator/memcached.yaml and envtest at internal/common/testutil/envtest/integration_test.go:48), kind Memcached, metadata.name openstack-memcached, metadata.namespace openstack, spec.replicas 3, spec.image memcached:1.6, spec.config.maxMemoryMB 1024, spec.config.maxConnections 4096, spec.resources.requests.memory 1Gi, spec.resources.requests.cpu 500m, spec.highAvailability.podAntiAffinity soft, spec.highAvailability.podDisruptionBudget.minAvailable 2, spec.monitoring.enabled true, spec.monitoring.exporter.image prom/memcached-exporter:latest. Include SPDX header. Reference: architecture/docs/03-components/01-control-plane/06-infrastructure-operators.md Memcached section.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-006",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Create Kustomization file and validate full manifest build (CC-0008, REQ-007, REQ-008)",
+      "description": "Create deploy/flux-system/kustomization.yaml with apiVersion kustomize.config.k8s.io/v1beta1, kind Kustomization, resources listing all 11 files: sources/cert-manager.yaml, sources/mariadb-operator.yaml, sources/external-secrets.yaml, sources/openbao.yaml, sources/c5c3-charts.yaml, releases/cert-manager.yaml, releases/mariadb-operator.yaml, releases/external-secrets.yaml, releases/memcached-operator.yaml, ../infrastructure/mariadb.yaml, ../infrastructure/memcached.yaml. Group entries with comments (# HelmRepository sources, # HelmRelease deployments, # Infrastructure CRs). Include SPDX header. Validate by running kustomize build deploy/flux-system/ and verify all resources appear in output.",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "5.1",
+      "title": "Create reference documentation for deploy/ infrastructure manifests (CC-0008, REQ-001 through REQ-008)",
+      "description": "Create docs/reference/infrastructure/fluxcd-manifests.md documenting: directory structure (deploy/flux-system/sources/, releases/, deploy/infrastructure/), each HelmRepository with name and URL, each HelmRelease with namespace and chart version, dependency ordering diagram, MariaDB Galera CR field summary, Memcached CR field summary (noting cache.c5c3.io API group), how to deploy (kubectl apply -k deploy/flux-system/), how to add new operators (add source + release + kustomization entry). Reference: architecture/docs/05-deployment/01-gitops-fluxcd/ for context.",
+      "level": 5,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "deploy/flux-system/kustomization.yaml",
+      "test_function": "kustomize_build_succeeds_without_errors",
+      "story": "Platform engineer deploys all infrastructure manifests via single kustomize command",
+      "expected": "kustomize build deploy/flux-system/ exits with status 0 and outputs valid multi-document YAML",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "deploy/flux-system/kustomization.yaml",
+      "test_function": "kustomize_build_includes_all_12_resources",
+      "story": "Platform engineer deploys all infrastructure manifests via single kustomize command",
+      "expected": "kustomize build output contains 5 HelmRepository, 4 HelmRelease, 1 ClusterIssuer, 1 MariaDB, 1 Memcached resource",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "deploy/flux-system/sources/cert-manager.yaml",
+      "test_function": "helmrepository_uses_correct_api_version",
+      "story": "Platform engineer creates HelmRepository sources for upstream chart registries",
+      "expected": "All 5 HelmRepository CRs use apiVersion source.toolkit.fluxcd.io/v1",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "deploy/flux-system/sources/c5c3-charts.yaml",
+      "test_function": "oci_helmrepository_has_type_oci",
+      "story": "Platform engineer creates HelmRepository sources for upstream chart registries",
+      "expected": "c5c3-charts HelmRepository has spec.type: oci and url starting with oci://",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/cert-manager.yaml",
+      "test_function": "certmanager_helmrelease_has_no_dependson",
+      "story": "Platform engineer deploys cert-manager as the base infrastructure layer with a self-signed ClusterIssuer",
+      "expected": "cert-manager HelmRelease has no dependsOn field (base layer)",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/cert-manager.yaml",
+      "test_function": "certmanager_includes_selfsigned_clusterissuer",
+      "story": "Platform engineer deploys cert-manager as the base infrastructure layer with a self-signed ClusterIssuer",
+      "expected": "File contains a ClusterIssuer with apiVersion cert-manager.io/v1 and spec.selfSigned",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/mariadb-operator.yaml",
+      "test_function": "helmrelease_has_production_settings",
+      "story": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "expected": "HelmRelease has install.crds CreateReplace, upgrade.crds CreateReplace, upgrade.remediation.retries 3, interval 30m",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/mariadb-operator.yaml",
+      "test_function": "dependent_operator_depends_on_certmanager",
+      "story": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "expected": "MariaDB, ESO, and Memcached Operator HelmReleases all have dependsOn: [{name: cert-manager, namespace: cert-manager}]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/memcached-operator.yaml",
+      "test_function": "memcached_operator_uses_c5c3_charts_sourceref",
+      "story": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "expected": "Memcached Operator HelmRelease sourceRef.name is c5c3-charts (shared OCI registry), NOT memcached-operator",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "deploy/infrastructure/mariadb.yaml",
+      "test_function": "mariadb_galera_cr_has_correct_spec",
+      "story": "Platform engineer provisions a MariaDB Galera cluster for OpenStack services",
+      "expected": "MariaDB CR has apiVersion k8s.mariadb.com/v1alpha1, 3 replicas, galera enabled, maxScale enabled with 2 replicas, 100Gi ceph-rbd storage, metrics enabled",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "deploy/infrastructure/memcached.yaml",
+      "test_function": "memcached_cr_uses_correct_api_group",
+      "story": "Platform engineer provisions a Memcached cluster for OpenStack session caching",
+      "expected": "Memcached CR uses apiVersion cache.c5c3.io/v1alpha1 (NOT memcached.c5c3.io/v1alpha1)",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "deploy/infrastructure/memcached.yaml",
+      "test_function": "memcached_cr_has_ha_and_monitoring",
+      "story": "Platform engineer provisions a Memcached cluster for OpenStack session caching",
+      "expected": "Memcached CR has 3 replicas, soft anti-affinity, PDB minAvailable 2, monitoring enabled with exporter",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "deploy/flux-system/sources/cert-manager.yaml",
+      "test_function": "all_yaml_files_have_spdx_header",
+      "story": "Platform engineer creates HelmRepository sources for upstream chart registries",
+      "expected": "Every YAML file under deploy/ starts with SPDX-FileCopyrightText and SPDX-License-Identifier Apache-2.0 comments",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/cert-manager.yaml",
+      "test_function": "helmrelease_sourceref_names_match_helmrepository_names",
+      "story": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "expected": "Each HelmRelease sourceRef.name matches a HelmRepository metadata.name in sources/ (cert-manager->cert-manager, mariadb-operator->mariadb-operator, external-secrets->external-secrets, memcached-operator->c5c3-charts)",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "deploy/flux-system/releases/external-secrets.yaml",
+      "test_function": "eso_helmrelease_targets_correct_namespace",
+      "story": "Platform engineer deploys infrastructure operators with correct dependency ordering",
+      "expected": "ESO HelmRelease metadata.namespace is external-secrets with chart version >=0.9.0",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "deploy/flux-system/kustomization.yaml",
+      "test_function": "kustomization_is_extensible_for_future_operators",
+      "story": "Platform engineer deploys all infrastructure manifests via single kustomize command",
+      "expected": "Adding a new operator (e.g., OpenBao HelmRelease for CC-0009) requires only adding one new source file, one new release file, and two lines in kustomization.yaml resources list",
+      "requirement_id": "REQ-007"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All HelmRepository CRs use apiVersion source.toolkit.fluxcd.io/v1 with correct URLs and namespace flux-system",
+    "All HelmRelease CRs use apiVersion helm.toolkit.fluxcd.io/v2 with interval 30m, install.crds CreateReplace, upgrade.crds CreateReplace, upgrade.remediation.retries 3, install.createNamespace true",
+    "Dependency chain is correct: cert-manager has no dependsOn; mariadb-operator, external-secrets, and memcached-operator all dependsOn cert-manager",
+    "Memcached Operator HelmRelease sourceRef.name is c5c3-charts (shared OCI registry) — NOT a separate memcached-operator repository",
+    "Memcached CR uses apiVersion cache.c5c3.io/v1alpha1 — NOT memcached.c5c3.io/v1alpha1",
+    "MariaDB Galera CR matches architecture doc: 3 replicas, Galera enabled, MaxScale 2 replicas, 100Gi ceph-rbd, metrics",
+    "cert-manager release file includes self-signed ClusterIssuer as second YAML document",
+    "kustomize build deploy/flux-system/ succeeds and outputs all 12 resources (5 HelmRepository + 4 HelmRelease + 1 ClusterIssuer + 1 MariaDB + 1 Memcached)",
+    "Every HelmRelease sourceRef.name matches a HelmRepository metadata.name defined in sources/",
+    "All YAML files include SPDX Apache-2.0 license header (3-line format matching project convention)"
+  ],
+  "implementation_notes": "Infrastructure-only feature: no Go code, no frontend, no API endpoints. All deliverables are static YAML manifests. The fullstack checklist (backend API, frontend hooks, UI components) does not apply.\n\nArchitectural decisions:\n- Single kustomization.yaml listing all files (no sub-directory kustomization files) for simplicity and explicit resource enumeration.\n- ClusterIssuer bundled in same file as cert-manager HelmRelease (multi-document YAML) per feature spec. In FluxCD deployments, HelmRelease installs cert-manager CRDs first; for kubectl apply -k, the ClusterIssuer may need a second apply.\n- install.createNamespace: true on all HelmReleases to avoid manual namespace pre-creation.\n- No Helm values beyond what architecture docs specify — no password/secret configuration (handled by CC-0009 ESO integration).\n\nCritical gotchas:\n1. Memcached API group is cache.c5c3.io (confirmed by fake CRD and envtest), NOT memcached.c5c3.io (used in architecture docs).\n2. Memcached Operator chart comes from c5c3-charts OCI repository (shared registry), NOT a separate memcached-operator HelmRepository.\n3. The ClusterIssuer is cluster-scoped (no namespace in metadata).\n\nKey files for reference:\n- architecture/docs/05-deployment/01-gitops-fluxcd/03-helm-deployment.md: canonical HelmRelease pattern\n- architecture/docs/09-implementation/07-ci-cd-and-packaging.md lines 310-353: c5c3-charts OCI pattern\n- architecture/docs/03-components/01-control-plane/06-infrastructure-operators.md: MariaDB and Memcached CR specs\n- internal/common/testutil/fake_crds/: CRD API group confirmation\n\nSPDX header format (3 lines):\n# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company\n#\n# SPDX-License-Identifier: Apache-2.0",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-02-22T20:42:36.264577"
+    },
+    "elaborated": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T08:00:06.845160"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T08:13:15.120147"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-11T08:30:37.867547"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "4fb80808-06e7-4af5-8044-313b88f84c66",
+      "timestamp": "2026-03-11T08:30:37.867587",
+      "total_duration": 1040.101232767105,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 1040.101232767105,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
