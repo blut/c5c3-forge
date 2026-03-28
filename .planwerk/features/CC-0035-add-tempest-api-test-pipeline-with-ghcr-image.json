@@ -1,24 +1,727 @@
 {
   "feature_id": "CC-0035",
-  "title": "Add Tempest API test pipeline with GHCR image publishing for Keystone",
+  "title": "Add Tempest API test pipeline with GHCR image",
   "slug": "add-tempest-api-test-pipeline-with-ghcr-image",
-  "status": "proposed",
+  "status": "prepared",
   "phase": null,
   "summary": "",
   "description": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** high\n**Source:** Proposed for 'Analogous to the execution of the unit tests for the Se'\n\nImplement end-to-end Tempest API testing infrastructure: (1) `images/tempest/Dockerfile` — 3-stage build (python-base → venv-builder → tempest) installing Tempest 45.0.0 + keystone-tempest-plugin 0.19.0 + python-subunit + junitxml via uv pip with upper-constraints, OCI LABELs, running as openstack user (UID 42424); (2) `releases/2025.2/test-refs.yaml` — version pins for PyPI test tooling separate from git-ref-based source-refs.yaml; (3) `tests/tempest/keystone/tempest.conf` + include-tests.txt + exclude-tests.txt — per-service config targeting keystone-basic-api:5000/v3 with admin credentials from keystone-admin ExternalSecret, scoped to tempest.api.identity.* and keystone_tempest_plugin.tests.*; (4) `.github/workflows/ci.yaml` modification — append Tempest steps to e2e-keystone job after Chainsaw (resolve version from test-refs.yaml via yq, build/load image into kind, run tempest with --subunit, convert to JUnit XML, upload artifact e2e-tempest-keystone-junit-report with 14-day retention); (5) `.github/workflows/build-images.yaml` modification — new build-tempest job with SBOM (anchore/sbom-action), Grype scanning, GitHub attestations, cosign signing, pushing to ghcr.io/c5c3/tempest:45.0.0-<branch>-<sha>; (6) `tests/container-images/verify_tempest.sh` — shell test with PASS/FAIL counters and exit-code guards verifying tempest --version, plugin presence, subunit2junitxml availability; (7) `Makefile` targets tempest-test / tempest-test SERVICE=keystone delegating to `hack/run-tempest.sh`; (8) `hack/run-tempest.sh` — orchestration script with set -euo pipefail, log() delimiters, configurable timeouts for local kind execution.\n\n**Rationale:** Current CI validates operator Go code (unit/integration/E2E) and container image build correctness (verify_*.sh), but never exercises the upstream OpenStack code base packaged inside service images through real API calls. A packaging regression (wrong dependency version, missing config, broken WSGI pipeline) would pass all existing checks but fail in production. Tempest API tests close this gap by validating that the Keystone identity API responds correctly to standard OpenStack operations, catching functional regressions at the container image level before merge. Publishing the Tempest image to GHCR enables reuse across future services and local developer testing without rebuilding.\n\n**Affected Areas:**\n- images/tempest/Dockerfile\n- releases/2025.2/test-refs.yaml\n- tests/tempest/keystone/tempest.conf\n- tests/tempest/keystone/include-tests.txt\n- tests/tempest/keystone/exclude-tests.txt\n- tests/container-images/verify_tempest.sh\n- .github/workflows/ci.yaml\n- .github/workflows/build-images.yaml\n- hack/run-tempest.sh\n- Makefile",
-  "stories": [],
-  "requirements": [],
-  "tasks": [],
-  "test_specifications": [],
+  "stories": [
+    {
+      "title": "CI pipeline runs Tempest API tests against Keystone after Chainsaw E2E",
+      "role": "CI pipeline",
+      "want": "to execute Tempest identity API tests against the Keystone service deployed in the kind cluster after Chainsaw E2E tests pass",
+      "so_that": "packaging regressions (wrong dependency version, missing config, broken WSGI pipeline) in the Keystone container image are caught before merge",
+      "criteria": [
+        "Tempest steps are appended to the e2e-keystone job in ci.yaml after the Chainsaw test step (after line 295)",
+        "Tempest image is built from the 3-stage chain (python-base → venv-builder → tempest) using versions from test-refs.yaml",
+        "Tempest image is loaded into the kind cluster via 'kind load docker-image'",
+        "Tempest runs with --subunit output, converted to JUnit XML in _output/reports/",
+        "JUnit XML is uploaded as artifact 'e2e-tempest-keystone-junit-report' with 14-day retention",
+        "Tempest targets keystone-basic-api.openstack.svc:5000/v3 with admin credentials from keystone-admin ExternalSecret"
+      ]
+    },
+    {
+      "title": "Tempest container image is published to GHCR with supply chain security",
+      "role": "release engineer",
+      "want": "the Tempest image to be built, scanned, signed, and pushed to GHCR via build-images.yaml",
+      "so_that": "the image can be reused across future services and by developers without rebuilding locally",
+      "criteria": [
+        "build-tempest job in build-images.yaml builds the 3-stage image chain and pushes to ghcr.io/<owner>/tempest",
+        "Image is tagged with composite tag: <tempest-version>-<branch>-<sha>",
+        "SBOM is generated via anchore/sbom-action in cyclonedx-json format",
+        "Grype vulnerability scan runs against SBOM (non-PR) or image (PR) with severity-cutoff: high",
+        "SARIF is uploaded to GitHub Security tab under category 'grype-tempest'",
+        "SBOM attestation is pushed to registry via actions/attest",
+        "Image is signed with cosign keyless signing"
+      ]
+    },
+    {
+      "title": "Developer can run Tempest tests locally via Makefile",
+      "role": "developer",
+      "want": "to run Tempest API tests against my local kind cluster using 'make tempest-test SERVICE=keystone'",
+      "so_that": "I can validate Keystone API functionality locally before pushing to CI",
+      "criteria": [
+        "make tempest-test SERVICE=keystone delegates to hack/run-tempest.sh",
+        "hack/run-tempest.sh builds the Tempest image, loads into kind, and runs tests",
+        "Script uses set -euo pipefail, log() with ISO 8601 timestamps, configurable timeouts",
+        "JUnit XML results are written to _output/reports/",
+        "Script exits non-zero if any Tempest test fails"
+      ]
+    },
+    {
+      "title": "Tempest container image correctness is verified by shell tests",
+      "role": "CI pipeline",
+      "want": "to verify that the built Tempest image contains the correct tempest version, keystone-tempest-plugin, and subunit2junitxml",
+      "so_that": "image build regressions are caught independently of the full E2E pipeline",
+      "criteria": [
+        "verify_tempest.sh validates 'tempest --version' exits 0 and outputs expected version",
+        "verify_tempest.sh validates keystone-tempest-plugin is importable",
+        "verify_tempest.sh validates subunit2junitxml is available on PATH",
+        "verify_tempest.sh uses PASS/FAIL counters and exit-code guards matching existing verify_*.sh pattern",
+        "verify_tempest.sh sources tests/lib/assertions.sh for assert_* helpers"
+      ]
+    },
+    {
+      "title": "Tempest test scope is precisely controlled via include/exclude lists",
+      "role": "CI pipeline",
+      "want": "to run only identity-related Tempest tests and exclude tests requiring unavailable services",
+      "so_that": "test execution is fast and does not fail due to missing Nova/Neutron/Glance/Cinder services",
+      "criteria": [
+        "include-tests.txt contains regex patterns for tempest.api.identity.* and keystone_tempest_plugin.tests.*",
+        "exclude-tests.txt contains regex patterns for tests requiring compute, network, volume, image services",
+        "tempest.conf sets service_available identity=true and all other services to false",
+        "Test lists are mounted into the Tempest container and passed to tempest run"
+      ]
+    },
+    {
+      "title": "Tempest Dockerfile follows project conventions and passes linting",
+      "role": "CI pipeline",
+      "want": "the Tempest Dockerfile to follow the established 3-stage build pattern and pass hadolint",
+      "so_that": "the image build is consistent with existing service images and maintainable",
+      "criteria": [
+        "Dockerfile uses FROM venv-builder AS build (stage 1) and FROM python-base (stage 2)",
+        "Installs tempest + keystone-tempest-plugin + python-subunit + junitxml via uv pip with upper-constraints",
+        "Runtime stage runs as openstack user (UID 42424)",
+        "OCI LABELs follow existing pattern: title, description, licenses, vendor",
+        "Dockerfile is added to lint-dockerfiles matrix in build-images.yaml",
+        "Uses hadolint ignore=DL3006,DL3008 consistent with existing Dockerfiles"
+      ]
+    },
+    {
+      "title": "Version pins for test tooling are managed separately from service source refs",
+      "role": "release engineer",
+      "want": "PyPI test-tool versions (tempest, keystone-tempest-plugin) pinned in test-refs.yaml separate from source-refs.yaml",
+      "so_that": "test tooling versions can evolve independently of upstream service versions and are the single source of truth",
+      "criteria": [
+        "releases/2025.2/test-refs.yaml contains tempest: '45.0.0' and keystone-tempest-plugin: '0.19.0'",
+        "CI workflows resolve versions from test-refs.yaml via yq (same pattern as source-refs.yaml resolution)",
+        "test-refs.yaml follows the same YAML structure conventions as source-refs.yaml"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "releases/2025.2/test-refs.yaml SHALL contain version pins for tempest (45.0.0) and keystone-tempest-plugin (0.19.0) as the single source of truth for test tooling versions",
+      "priority": "SHALL",
+      "rationale": "Separates PyPI test-tooling versions from git-ref-based source-refs.yaml. CI workflows and Dockerfiles resolve versions from this file via yq.",
+      "scenarios": [
+        {
+          "name": "test-refs.yaml contains tempest version",
+          "when": "yq '.tempest' releases/2025.2/test-refs.yaml is executed",
+          "then": "the output is '45.0.0'",
+          "and_then": [
+            "no null or empty value is returned"
+          ]
+        },
+        {
+          "name": "test-refs.yaml contains keystone-tempest-plugin version",
+          "when": "yq '.\"keystone-tempest-plugin\"' releases/2025.2/test-refs.yaml is executed",
+          "then": "the output is '0.19.0'",
+          "and_then": [
+            "no null or empty value is returned"
+          ]
+        },
+        {
+          "name": "test-refs.yaml is valid YAML",
+          "when": "the file is parsed by yq",
+          "then": "no parse errors occur",
+          "and_then": [
+            "file has SPDX Apache-2.0 header comment"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "images/tempest/Dockerfile SHALL build a Tempest image using the 3-stage chain (python-base → venv-builder → tempest) installing tempest, keystone-tempest-plugin, python-subunit, and junitxml via uv pip with upper-constraints",
+      "priority": "SHALL",
+      "rationale": "Follows the established multi-stage build pattern from images/keystone/Dockerfile. Unlike service images, Tempest installs from PyPI (no git source mount needed).",
+      "scenarios": [
+        {
+          "name": "Tempest image builds successfully",
+          "when": "docker build is run with --build-context upper-constraints=releases/2025.2 and --build-context python-base=... --build-context venv-builder=...",
+          "then": "the image builds without errors",
+          "and_then": [
+            "the image contains tempest, keystone-tempest-plugin, python-subunit, and junitxml packages"
+          ]
+        },
+        {
+          "name": "Image runs as openstack user",
+          "when": "docker run --rm <tempest-image> whoami is executed",
+          "then": "the output is 'openstack'",
+          "and_then": [
+            "UID is 42424"
+          ]
+        },
+        {
+          "name": "Build tools are not in the final image",
+          "when": "docker run --rm <tempest-image> which gcc is executed",
+          "then": "the command exits non-zero (gcc not found)",
+          "and_then": [
+            "uv is also not present in the final image"
+          ]
+        },
+        {
+          "name": "OCI labels are present",
+          "when": "docker inspect is run on the image",
+          "then": "labels include org.opencontainers.image.title=tempest, licenses=Apache-2.0, vendor=SAP SE",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "tests/tempest/keystone/tempest.conf SHALL configure Tempest to target keystone-basic-api.openstack.svc:5000/v3 with admin credentials and only identity service available",
+      "priority": "SHALL",
+      "rationale": "Tempest needs a minimal configuration pointing to the Keystone service deployed by Chainsaw in the kind cluster. Admin credentials come from the keystone-admin ExternalSecret provisioned by OpenBao bootstrap.",
+      "scenarios": [
+        {
+          "name": "Identity auth URL is configured",
+          "when": "tempest.conf is parsed",
+          "then": "[identity] uri_v3 = http://keystone-basic-api.openstack.svc:5000/v3",
+          "and_then": []
+        },
+        {
+          "name": "Admin credentials are configured",
+          "when": "tempest.conf is parsed",
+          "then": "[auth] admin_username, admin_password, admin_project_name, and admin_domain_name are set",
+          "and_then": [
+            "admin_password references the value from keystone-admin ExternalSecret"
+          ]
+        },
+        {
+          "name": "Only identity service is available",
+          "when": "tempest.conf is parsed",
+          "then": "[service_available] identity = true and all other services (compute, network, volume, image, object-storage) = false",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "tests/tempest/keystone/include-tests.txt and exclude-tests.txt SHALL scope Tempest to identity-related tests only",
+      "priority": "SHALL",
+      "rationale": "Only Keystone is deployed in the kind cluster. Running tests that require other services would fail. Regex patterns control which test classes Tempest discovers and runs.",
+      "scenarios": [
+        {
+          "name": "Include list contains identity test patterns",
+          "when": "include-tests.txt is read",
+          "then": "it contains patterns matching tempest.api.identity and keystone_tempest_plugin.tests",
+          "and_then": [
+            "one pattern per line, lines starting with # are comments"
+          ]
+        },
+        {
+          "name": "Exclude list filters unavailable service tests",
+          "when": "exclude-tests.txt is read",
+          "then": "it contains patterns excluding tests that require compute, network, volume, or image services",
+          "and_then": [
+            "patterns follow the same regex format as releases/2025.2/test-excludes/keystone.txt"
+          ]
+        },
+        {
+          "name": "Empty exclude list does not cause errors",
+          "when": "exclude-tests.txt is empty or contains only comments",
+          "then": "Tempest runs without errors from the exclude-list argument",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "tests/container-images/verify_tempest.sh SHALL verify the Tempest container image contains correct tempest version, keystone-tempest-plugin, and subunit2junitxml",
+      "priority": "SHALL",
+      "rationale": "Independent verification of image contents (separate from full E2E) catches build regressions early. Follows the established verify_*.sh pattern from verify_keystone.sh.",
+      "scenarios": [
+        {
+          "name": "tempest --version succeeds",
+          "when": "docker run --rm <image> tempest --version is executed",
+          "then": "the command exits 0 and outputs a non-empty version string",
+          "and_then": []
+        },
+        {
+          "name": "keystone-tempest-plugin is importable",
+          "when": "docker run --rm <image> python3 -c 'import keystone_tempest_plugin' is executed",
+          "then": "the command exits 0",
+          "and_then": []
+        },
+        {
+          "name": "subunit2junitxml is available",
+          "when": "docker run --rm <image> which subunit2junitxml is executed",
+          "then": "the command exits 0 and returns a path",
+          "and_then": []
+        },
+        {
+          "name": "Container runs as openstack user",
+          "when": "docker run --rm <image> whoami is executed",
+          "then": "the output is 'openstack'",
+          "and_then": []
+        },
+        {
+          "name": "PASS/FAIL summary is printed",
+          "when": "all tests complete",
+          "then": "script outputs '=== Results: N passed, M failed ===' and exits 1 if any test failed",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "hack/run-tempest.sh SHALL orchestrate Tempest image build, kind loading, and test execution for local development",
+      "priority": "SHALL",
+      "rationale": "Developers need a single-command way to run Tempest tests locally against their kind cluster, matching the pattern of hack/deploy-infra.sh.",
+      "scenarios": [
+        {
+          "name": "Script builds and runs Tempest against kind cluster",
+          "when": "hack/run-tempest.sh is executed with SERVICE=keystone",
+          "then": "the script builds python-base, venv-builder, tempest images, loads tempest into kind, and runs tests",
+          "and_then": [
+            "JUnit XML output is written to _output/reports/"
+          ]
+        },
+        {
+          "name": "Script fails with clear error if SERVICE is not provided",
+          "when": "hack/run-tempest.sh is executed without SERVICE environment variable",
+          "then": "the script prints a usage message and exits 1",
+          "and_then": []
+        },
+        {
+          "name": "Script respects configurable timeouts",
+          "when": "TEMPEST_TIMEOUT is set as an environment variable",
+          "then": "the script uses the provided timeout value for Tempest execution",
+          "and_then": [
+            "default timeout is used when TEMPEST_TIMEOUT is not set"
+          ]
+        },
+        {
+          "name": "Script uses strict shell mode",
+          "when": "the script starts",
+          "then": "set -euo pipefail is active, log() prints ISO 8601 UTC timestamps",
+          "and_then": [
+            "SPDX Apache-2.0 header is present"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "Makefile SHALL expose tempest-test target delegating to hack/run-tempest.sh with SERVICE parameter",
+      "priority": "SHALL",
+      "rationale": "Consistent with existing Makefile targets (e2e, deploy-infra, install-test-deps) that delegate to hack/ scripts.",
+      "scenarios": [
+        {
+          "name": "make tempest-test SERVICE=keystone runs Tempest",
+          "when": "make tempest-test SERVICE=keystone is executed",
+          "then": "hack/run-tempest.sh is invoked with SERVICE=keystone",
+          "and_then": []
+        },
+        {
+          "name": "make tempest-test without SERVICE fails",
+          "when": "make tempest-test is executed without SERVICE",
+          "then": "make prints an error message requiring SERVICE parameter",
+          "and_then": [
+            "uses $(if $(SERVICE),,$(error ...)) pattern from existing docker-build target"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "ci.yaml e2e-keystone job SHALL append Tempest steps after Chainsaw that build/load the tempest image, run tests with --subunit, convert to JUnit XML, and upload as artifact",
+      "priority": "SHALL",
+      "rationale": "Extends the existing E2E validation to include upstream API-level testing. Appending after Chainsaw ensures the Keystone service is fully deployed before Tempest runs.",
+      "scenarios": [
+        {
+          "name": "Tempest version is resolved from test-refs.yaml",
+          "when": "the new steps execute",
+          "then": "TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION are resolved from releases/2025.2/test-refs.yaml via yq",
+          "and_then": [
+            "null or empty values cause the step to fail with a descriptive error"
+          ]
+        },
+        {
+          "name": "Tempest image is built and loaded into kind",
+          "when": "the image build step executes",
+          "then": "docker build produces tempest:45.0.0 using python-base and venv-builder already built in the job",
+          "and_then": [
+            "kind load docker-image tempest:45.0.0 --name forge-e2e loads it into the cluster"
+          ]
+        },
+        {
+          "name": "Tempest tests execute with subunit output",
+          "when": "the Tempest run step executes",
+          "then": "Tempest runs the scoped identity tests using tempest.conf, include-tests.txt, and exclude-tests.txt from tests/tempest/keystone/",
+          "and_then": [
+            "subunit output is piped through subunit2junitxml to produce JUnit XML in _output/reports/"
+          ]
+        },
+        {
+          "name": "JUnit XML artifact is uploaded",
+          "when": "the upload step executes (always condition)",
+          "then": "artifact named 'e2e-tempest-keystone-junit-report' is uploaded with 14-day retention",
+          "and_then": [
+            "matches the existing pattern from the Chainsaw JUnit upload at ci.yaml:328-334"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "build-images.yaml SHALL include a build-tempest job with SBOM generation, Grype scanning, GitHub attestations, and cosign signing, pushing to ghcr.io/<owner>/tempest",
+      "priority": "SHALL",
+      "rationale": "Publishing the Tempest image to GHCR enables reuse across future services and local developer testing without rebuilding. Supply chain security follows the existing base/service image pattern.",
+      "scenarios": [
+        {
+          "name": "build-tempest job builds and pushes the image",
+          "when": "the job executes on push events (non-PR)",
+          "then": "the image is pushed to ghcr.io/<owner>/tempest with composite tag <version>-<branch>-<sha>",
+          "and_then": [
+            "version-only tag is restricted to main branch (consistent with service images)"
+          ]
+        },
+        {
+          "name": "SBOM is generated and attested",
+          "when": "the job executes on non-PR events",
+          "then": "anchore/sbom-action generates cyclonedx-json SBOM and actions/attest pushes attestation to registry",
+          "and_then": []
+        },
+        {
+          "name": "Grype scan runs and uploads SARIF",
+          "when": "the job executes",
+          "then": "anchore/scan-action scans SBOM (non-PR) or image (PR) with severity-cutoff: high, fail-build: false",
+          "and_then": [
+            "SARIF is uploaded to GitHub Security tab under category 'grype-tempest'"
+          ]
+        },
+        {
+          "name": "Image is signed with cosign",
+          "when": "the job executes on non-PR events",
+          "then": "cosign sign --yes is executed against the image digest",
+          "and_then": []
+        },
+        {
+          "name": "PR builds use load instead of push",
+          "when": "the workflow is triggered by a pull_request event",
+          "then": "the image is loaded locally (load: true, push: false) for verification",
+          "and_then": [
+            "verify_tempest.sh runs against the locally loaded image"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "build-images.yaml lint-dockerfiles job SHALL include images/tempest/Dockerfile in the hadolint matrix",
+      "priority": "SHALL",
+      "rationale": "All Dockerfiles in the repository are linted by hadolint. The tempest Dockerfile must be added to the matrix to maintain consistency.",
+      "scenarios": [
+        {
+          "name": "Tempest Dockerfile is linted",
+          "when": "the lint-dockerfiles job runs",
+          "then": "images/tempest/Dockerfile is included in the matrix and passes hadolint with failure-threshold: warning",
+          "and_then": []
+        },
+        {
+          "name": "Tempest Dockerfile uses required hadolint ignores",
+          "when": "hadolint lints the Dockerfile",
+          "then": "DL3006 (latest tag) and DL3008 (unpinned apt) are ignored via inline comments, consistent with other Dockerfiles",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "description": "All new shell scripts SHALL use set -euo pipefail, SPDX Apache-2.0 headers, and CC-0035 feature reference",
+      "priority": "SHALL",
+      "rationale": "Consistent with existing shell scripts (hack/deploy-infra.sh, hack/install-test-deps.sh, tests/container-images/verify_keystone.sh).",
+      "scenarios": [
+        {
+          "name": "Scripts have SPDX headers",
+          "when": "any new .sh file is checked",
+          "then": "lines 1-4 contain SPDX-FileCopyrightText and SPDX-License-Identifier: Apache-2.0",
+          "and_then": []
+        },
+        {
+          "name": "Scripts use strict mode",
+          "when": "any new .sh file is checked",
+          "then": "set -euo pipefail is present near the top of the script",
+          "and_then": []
+        },
+        {
+          "name": "Scripts reference feature ID",
+          "when": "any new .sh file is checked",
+          "then": "CC-0035 is referenced in the script header comments",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create releases/2025.2/test-refs.yaml with Tempest and keystone-tempest-plugin version pins (REQ-001)",
+      "description": "Create releases/2025.2/test-refs.yaml with SPDX header and two entries: tempest: '45.0.0' and keystone-tempest-plugin: '0.19.0'. Follow the YAML structure of releases/2025.2/source-refs.yaml (simple key-value pairs). This file is read by CI workflows via yq to resolve PyPI package versions for the Dockerfile build.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Create images/tempest/Dockerfile with 2-stage build installing Tempest from PyPI (REQ-002, REQ-011)",
+      "description": "Create images/tempest/Dockerfile following the pattern from images/keystone/Dockerfile. Stage 1 (FROM venv-builder AS build): ARGs for TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION with defaults, RUN --mount upper-constraints to install tempest==$TEMPEST_VERSION keystone-tempest-plugin==$KEYSTONE_TEMPEST_PLUGIN_VERSION python-subunit junitxml via uv pip. Unlike keystone, no --build-context for service source and no WSGI entry-point script. Stage 2 (FROM python-base): COPY --from=build --link /var/lib/openstack, OCI LABELs (title=tempest, description=OpenStack Tempest testing framework, licenses=Apache-2.0, vendor=SAP SE), USER openstack. Include SPDX header and hadolint ignore=DL3006,DL3008 comments.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-002",
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Create tests/tempest/keystone/tempest.conf targeting keystone-basic-api:5000/v3 (REQ-003)",
+      "description": "Create tests/tempest/keystone/tempest.conf with SPDX header. Sections: [DEFAULT] (log_dir, log_file), [identity] (uri_v3=http://keystone-basic-api.openstack.svc:5000/v3), [auth] (admin_username=admin, admin_password=${KEYSTONE_ADMIN_PASSWORD}, admin_project_name=admin, admin_domain_name=Default, use_dynamic_credentials=false), [service_available] (identity=true, compute=false, network=false, volume=false, image=false, object-storage=false), [identity-feature-enabled] (api_v3=true). The admin_password will be injected at runtime from the keystone-admin K8s secret.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Create tests/tempest/keystone/include-tests.txt and exclude-tests.txt (REQ-004)",
+      "description": "Create include-tests.txt with SPDX header and regex patterns: 'tempest.api.identity' and 'keystone_tempest_plugin.tests'. Create exclude-tests.txt with SPDX header and patterns excluding tests that require services not deployed (compute, network, volume, image, object-storage related tests, and any known flaky tests). Follow the comment/pattern format from releases/2025.2/test-excludes/keystone.txt.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Create tests/container-images/verify_tempest.sh with PASS/FAIL test pattern (REQ-005, REQ-011)",
+      "description": "Create verify_tempest.sh following the exact pattern from verify_keystone.sh. Tests: (1) tempest --version exits 0 and outputs non-empty version, (2) python3 -c 'import keystone_tempest_plugin' exits 0, (3) which subunit2junitxml exits 0, (4) container runs as openstack user (whoami outputs 'openstack'), (5) no build tools in final image (gcc, python3-dev, uv not found). Source tests/lib/assertions.sh, use PASS/FAIL counters, print results summary, exit 1 on any failure. Default IMAGE to c5c3/tempest:45.0.0.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-005",
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Create hack/run-tempest.sh orchestration script for local Tempest execution (REQ-006, REQ-011)",
+      "description": "Create hack/run-tempest.sh following the pattern from hack/deploy-infra.sh. SPDX header, set -euo pipefail, SCRIPT_DIR/REPO_ROOT resolution, configurable variables (CLUSTER_NAME=forge-e2e, TEMPEST_TIMEOUT=600, SERVICE required). log() function matching deploy-infra.sh pattern. Steps: (1) validate SERVICE is set, (2) resolve versions from releases/2025.2/test-refs.yaml via yq, (3) build image chain (docker build -t python-base images/python-base/, docker build -t venv-builder images/venv-builder/, docker build tempest image with --build-arg versions and --build-context upper-constraints=releases/2025.2), (4) kind load docker-image into $CLUSTER_NAME, (5) run Tempest container in kind cluster with mounted tempest.conf from tests/tempest/$SERVICE/, (6) extract JUnit XML to _output/reports/. Exit non-zero on test failure.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-006",
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add Makefile targets tempest-test with SERVICE parameter validation (REQ-007)",
+      "description": "Add to Makefile in the 'Testing and Infrastructure Targets' section (after the e2e target at line 216): '.PHONY: tempest-test' with comment referencing CC-0035 and usage instructions, guard using $(if $(SERVICE),,$(error ...)) pattern from docker-build target, delegating to SERVICE=$(SERVICE) hack/run-tempest.sh.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Modify ci.yaml e2e-keystone job to append Tempest build, run, and artifact upload steps after Chainsaw (REQ-008)",
+      "description": "Insert new steps into ci.yaml e2e-keystone job after the 'Run E2E tests' step (after line 295) and before the 'Dump diagnostic info' step (line 296). New steps: (1) 'Resolve Tempest versions' — read TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION from test-refs.yaml via yq with null/empty guards, (2) 'Build Tempest image' — docker build tempest image using python-base and venv-builder already built at lines 249-250, passing --build-arg TEMPEST_VERSION and --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION, --build-context upper-constraints=releases/2025.2, (3) 'Load Tempest image into kind' — kind load docker-image tempest:$TEMPEST_VERSION --name forge-e2e, (4) 'Run Tempest API tests' — kubectl run/exec tempest pod in openstack namespace with mounted tempest.conf, include-tests.txt, exclude-tests.txt from tests/tempest/${{ matrix.operator }}/, admin password from keystone-admin secret, subunit output piped to subunit2junitxml writing to _output/reports/, (5) 'Upload Tempest JUnit report' — uses: actions/upload-artifact with name: e2e-tempest-${{ matrix.operator }}-junit-report, path: _output/reports/, retention-days: 14, if: always().",
+      "level": 3,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Add build-tempest job to build-images.yaml with SBOM, Grype, attestation, and cosign (REQ-009)",
+      "description": "Add a new 'build-tempest' job to build-images.yaml, placed after build-service-images. Needs: [build-base-images, verify-base-images]. Permissions: contents:read, packages:write, id-token:write, attestations:write, security-events:write. Steps following the build-service-images pattern: (1) checkout, (2) normalize image owner, (3) resolve tempest version from test-refs.yaml via yq, (4) derive tags — IMAGE=ghcr.io/<owner>/tempest, COMPOSITE=<version>-<branch>-<sha>, (5) setup-buildx, (6) docker login to ghcr.io, (7) install cosign, (8) generate metadata via docker/metadata-action, (9) build-push-action with context=images/tempest, build-args for TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION, build-contexts for python-base (digest from build-base-images), venv-builder (digest from build-base-images), upper-constraints=releases/2025.2/, (10) generate SBOM, (11) Grype scan (SBOM for non-PR, image for PR), (12) upload SARIF category grype-tempest, (13) attest SBOM, (14) cosign sign, (15) verify_tempest.sh on PR (inline). Push on non-PR, load on PR. Multi-arch linux/amd64,linux/arm64 for non-PR, linux/amd64 for PR.",
+      "level": 3,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "3.3",
+      "title": "Add images/tempest/Dockerfile to lint-dockerfiles matrix in build-images.yaml (REQ-010)",
+      "description": "Modify the lint-dockerfiles job matrix in build-images.yaml (line 48-52) to add '- images/tempest/Dockerfile' to the dockerfile list. This ensures the new Tempest Dockerfile is linted by hadolint on every push/PR that touches images/**.",
+      "level": 3,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Write reference documentation for Tempest test infrastructure (CC-0035)",
+      "description": "Create docs/reference/backend/tempest-testing.md documenting: (1) test-refs.yaml format and purpose, (2) Dockerfile build chain and build args, (3) tempest.conf configuration reference (all sections and keys), (4) include-tests.txt and exclude-tests.txt format, (5) verify_tempest.sh test cases, (6) hack/run-tempest.sh usage and environment variables, (7) Makefile target usage. Include examples for adding new services (new tempest.conf + test lists directory).",
+      "level": 4,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/container-images/verify_tempest.sh",
+      "test_function": "test_tempest_version",
+      "story": "Tempest container image correctness is verified by shell tests",
+      "expected": "tempest --version exits 0 and outputs a non-empty version string",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_tempest.sh",
+      "test_function": "test_keystone_tempest_plugin_importable",
+      "story": "Tempest container image correctness is verified by shell tests",
+      "expected": "python3 -c 'import keystone_tempest_plugin' exits 0",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_tempest.sh",
+      "test_function": "test_subunit2junitxml_available",
+      "story": "Tempest container image correctness is verified by shell tests",
+      "expected": "which subunit2junitxml exits 0 and returns a path",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_tempest.sh",
+      "test_function": "test_runs_as_openstack_user",
+      "story": "Tempest container image correctness is verified by shell tests",
+      "expected": "whoami outputs 'openstack'",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_tempest.sh",
+      "test_function": "test_no_build_tools_in_final_image",
+      "story": "Tempest container image correctness is verified by shell tests",
+      "expected": "gcc, python3-dev, uv are not found in the final image",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/container-images/verify_release_config.sh",
+      "test_function": "test_test_refs_yaml_valid",
+      "story": "Version pins for test tooling are managed separately from service source refs",
+      "expected": "yq can parse test-refs.yaml and extract tempest and keystone-tempest-plugin versions without error",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml (lint-dockerfiles job)",
+      "test_function": "hadolint_tempest_dockerfile",
+      "story": "Tempest Dockerfile follows project conventions and passes linting",
+      "expected": "hadolint passes on images/tempest/Dockerfile with failure-threshold: warning",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml (build-tempest job)",
+      "test_function": "build_tempest_image_pr",
+      "story": "Tempest container image is published to GHCR with supply chain security",
+      "expected": "On PR, image is built with load:true and verify_tempest.sh runs against local image",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": ".github/workflows/build-images.yaml (build-tempest job)",
+      "test_function": "build_tempest_image_push",
+      "story": "Tempest container image is published to GHCR with supply chain security",
+      "expected": "On push, image is pushed to GHCR with SBOM, Grype scan, attestation, and cosign signing",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml (e2e-keystone job)",
+      "test_function": "tempest_api_tests_after_chainsaw",
+      "story": "CI pipeline runs Tempest API tests against Keystone after Chainsaw E2E",
+      "expected": "Tempest steps execute after Chainsaw, produce JUnit XML, and upload as artifact",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml (e2e-keystone job)",
+      "test_function": "tempest_version_resolution_failure",
+      "story": "CI pipeline runs Tempest API tests against Keystone after Chainsaw E2E",
+      "expected": "If test-refs.yaml returns null/empty for tempest version, the step fails with descriptive error",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/container-images/verify_tempest.sh (integration)",
+      "test_function": "full_image_build_and_verify",
+      "story": "Tempest Dockerfile follows project conventions and passes linting",
+      "expected": "Building the full chain (python-base → venv-builder → tempest) succeeds and verify_tempest.sh passes all checks",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "hack/run-tempest.sh (manual test)",
+      "test_function": "run_tempest_missing_service",
+      "story": "Developer can run Tempest tests locally via Makefile",
+      "expected": "Running without SERVICE variable prints usage message and exits 1",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "hack/run-tempest.sh (manual test)",
+      "test_function": "run_tempest_with_service",
+      "story": "Developer can run Tempest tests locally via Makefile",
+      "expected": "Running with SERVICE=keystone builds tempest image, loads into kind, runs tests, produces JUnit XML",
+      "requirement_id": "REQ-006"
+    }
+  ],
   "affected_files": [],
   "similar_patterns": [],
-  "review_criteria": [],
-  "implementation_notes": "",
+  "review_criteria": [
+    "All new shell scripts (verify_tempest.sh, hack/run-tempest.sh) use set -euo pipefail, SPDX Apache-2.0 header, and CC-0035 feature reference",
+    "images/tempest/Dockerfile follows the 2-stage pattern from images/keystone/Dockerfile: FROM venv-builder AS build, FROM python-base, COPY --from=build --link, USER openstack, OCI LABELs",
+    "verify_tempest.sh passes all 5 test cases when run against a locally built tempest image",
+    "ci.yaml Tempest steps are correctly placed after Chainsaw (after line 295) and before diagnostic dump, with yq null/empty guards for version resolution",
+    "build-images.yaml build-tempest job follows the exact SBOM → Grype → SARIF → Attest → Cosign chain from build-base-images/build-service-images jobs, using the same action versions and pin hashes",
+    "All YAML files (test-refs.yaml, tempest.conf, workflow modifications) are syntactically valid and parseable by yq",
+    "lint-dockerfiles matrix includes images/tempest/Dockerfile and hadolint passes without warnings",
+    "Makefile tempest-test target uses $(if $(SERVICE),,$(error ...)) guard pattern consistent with docker-build target",
+    "hack/run-tempest.sh log() function matches the ISO 8601 UTC pattern from hack/deploy-infra.sh:57-59",
+    "No hardcoded version numbers in Dockerfile or workflows — all versions resolved from test-refs.yaml via yq at runtime"
+  ],
+  "implementation_notes": "## Architecture\n\n```\nimages/tempest/Dockerfile          ← New: 2-stage build (FROM venv-builder → FROM python-base)\nreleases/2025.2/test-refs.yaml     ← New: version pins (tempest: 45.0.0, keystone-tempest-plugin: 0.19.0)\ntests/tempest/keystone/            ← New: per-service Tempest config directory\n  tempest.conf                     ← Keystone-specific Tempest configuration\n  include-tests.txt                ← Regex patterns for tests to run\n  exclude-tests.txt                ← Regex patterns for tests to skip\ntests/container-images/\n  verify_tempest.sh                ← New: image verification script\nhack/run-tempest.sh                ← New: local orchestration script\nMakefile                           ← Modified: add tempest-test target\n.github/workflows/ci.yaml          ← Modified: append Tempest steps to e2e-keystone\n.github/workflows/build-images.yaml← Modified: add build-tempest job + lint matrix entry\n```\n\n## Data Flow (CI)\n\n```\ntest-refs.yaml ──yq──→ TEMPEST_VERSION + KEYSTONE_TEMPEST_PLUGIN_VERSION\n                         │\n                         ▼\n         docker build --build-arg TEMPEST_VERSION=... \\\n                      --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=... \\\n                      --build-context upper-constraints=releases/2025.2 \\\n                      --build-context python-base=<local> \\\n                      --build-context venv-builder=<local> \\\n                      images/tempest/\n                         │\n                         ▼\n              kind load docker-image tempest:45.0.0 --name forge-e2e\n                         │\n                         ▼\n              kubectl run tempest --image=tempest:45.0.0 \\\n                --mount tempest.conf, include-tests.txt, exclude-tests.txt \\\n                --env KEYSTONE_ADMIN_PASSWORD=<from keystone-admin secret>\n                         │\n                         ▼\n              tempest run --subunit │ subunit2junitxml > _output/reports/tempest.xml\n                         │\n                         ▼\n              actions/upload-artifact → e2e-tempest-keystone-junit-report\n```\n\n## Key Differences from Keystone Dockerfile\n\n1. **No git source mount**: Tempest installs from PyPI, not from cloned source. No `--build-context keystone=<path>` needed.\n2. **No WSGI entry-point**: Tempest is a CLI tool, not a WSGI application.\n3. **No PIP_EXTRAS/EXTRA_APT_PACKAGES**: Tempest has no optional extras or runtime apt deps beyond python-base.\n4. **ARGs for versions**: Uses TEMPEST_VERSION and KEYSTONE_TEMPEST_PLUGIN_VERSION build args (resolved from test-refs.yaml).\n\n## Key Patterns to Follow\n\n- **Dockerfile**: images/keystone/Dockerfile (2-stage, OCI labels, USER openstack)\n- **verify script**: tests/container-images/verify_keystone.sh (PASS/FAIL counters, assertions.sh)\n- **hack script**: hack/deploy-infra.sh (set -euo pipefail, log(), configurable vars, SCRIPT_DIR/REPO_ROOT)\n- **Makefile target**: Makefile:199-201 ($(if) guard, delegation to hack/)\n- **CI yq resolution**: ci.yaml:231-236 (yq read + null/empty guard)\n- **build-images SBOM chain**: build-images.yaml:147-204 (SBOM → Grype → SARIF → Attest → Cosign)\n- **Tag derivation**: build-images.yaml:403-429 (composite tag format)\n\n## Risks\n\n1. **Tempest init timing**: Tempest needs a working directory for its config. The container must init the workspace before running tests.\n2. **Admin password injection**: The keystone-admin secret must be readable from the tempest pod in the openstack namespace.\n3. **Keystone API readiness**: Tempest may fail if Keystone hasn't fully initialized after Chainsaw creates the CR. A wait/readiness check may be needed.\n4. **upper-constraints compatibility**: Tempest 45.0.0 packages must be compatible with the 2025.2 upper-constraints.txt. If not, specific constraint overrides may be needed.\n5. **CI timeout**: Adding Tempest steps increases e2e-keystone job duration. Current timeout is 45 minutes — may need increase.",
   "status_history": {
     "proposed": {
       "github_account": "berendt",
       "timestamp": "2026-03-28T09:50:20.652861"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-28T09:54:38.770860"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-03-28T10:02:31.712198"
     }
   },
-  "elaboration": "**Size:** 🏗️ large\n**Category:** infrastructure\n**Priority:** high\n\n## Summary\n\nAdd per-service Tempest API test execution to the CI pipeline and publish the Tempest image to GHCR. For Keystone, Tempest 45.0.0 (with keystone-tempest-plugin 0.19.0) runs targeted API tests (`tempest.api.identity.*` + `keystone_tempest_plugin.tests.*`) against the deployed Keystone service in a kind cluster, validating that the upstream code base packaged in the container image is functionally correct. The Tempest image follows the existing 3-stage build pattern (`python-base` → `venv-builder` → `tempest`) and is both built on-the-fly in CI (for E2E testing) and published to GHCR via `build-images.yaml` (for reuse by future consumers). This complements existing Go operator tests (unit + integration + E2E via Chainsaw) with upstream OpenStack API-level validation.\n\n**Note:** Architecture docs (`architecture/docs/08-container-images/index.md:105-118`) reference Tempest 41.0.0. This elaboration uses **45.0.0** per user specification — `releases/2025.2/test-refs.yaml` will pin this version as the source of truth.\n\n## Scope\n\n**Included:**\n- Tempest container image build definition (`images/tempest/Dockerfile`) following the 3-stage pattern: `python-base` → `venv-builder` → `tempest` runtime. Unlike the Keystone Dockerfile (`images/keystone/Dockerfile`), no WSGI entry-point script or `--build-context <service>=<source>` mount is needed — Tempest installs from PyPI, not from cloned source.\n- Tempest 45.0.0 and keystone-tempest-plugin 0.19.0 installed via `uv pip install` with upper-constraints (`releases/2025.2/upper-constraints.txt`), plus `python-subunit` and `junitxml` for JUnit report conversion.\n- Version pinning in a new file `releases/2025.2/test-refs.yaml` (entries: `tempest: \"45.0.0\"`, `keystone-tempest-plugin: \"0.19.0\"`), separating PyPI test-tooling versions from the git-ref-based `source-refs.yaml`.\n- Per-service Tempest configuration (`tests/tempest/keystone/tempest.conf`) — `[identity]` auth URL pointing to the Keystone service deployed by the Chainsaw E2E (e.g., `http://keystone-basic-api.openstack.svc:5000/v3`), admin credentials from the existing `keystone-admin` ExternalSecret (provisioned by OpenBao bootstrap in `hack/deploy-infra.sh:577-603`), `[service_available]` with only `identity = true`.\n- Per-service test include/exclude lists (`tests/tempest/keystone/include-tests.txt` / `exclude-tests.txt`) — regex patterns controlling which Tempest tests run, analogous to `releases/2025.2/test-excludes/keystone.txt` used for stestr unit tests.\n- CI workflow integration in `.github/workflows/ci.yaml` — new steps appended to the existing `e2e-keystone` job (`ci.yaml:205-334`) after Chainsaw test execution (`ci.yaml:292-295`): builds Tempest image, loads into kind, runs targeted tests against the deployed Keystone service, uploads JUnit XML to `_output/reports/`.\n- GHCR publishing in `.github/workflows/build-images.yaml` — a dedicated `build-tempest` job (separate from the service build matrix) that builds the 3-stage image chain, tags with version metadata, pushes to `ghcr.io/c5c3/tempest:45.0.0-<branch>-<sha>`, with SBOM generation (anchore/sbom-action), Grype vulnerability scanning, GitHub attestations, and cosign signing — consistent with the existing base/service image pattern.\n- `make tempest-test` / `make tempest-test SERVICE=keystone` Makefile targets (consistent with existing `make e2e` pattern at `Makefile:214-216`), delegating to a script in `hack/`.\n- JUnit XML report output to `_output/reports/` (via `--subunit` piped to `subunit2junitxml`), uploaded as CI artifact with 14-day retention (matching existing `e2e-${{ matrix.operator }}-junit-report` pattern at `ci.yaml:328-334`).\n\n**Excluded:**\n- Tempest Kubernetes Operator/CRD (`tempest.openstack.c5c3.io/v1alpha1` documented in `architecture/docs/03-components/01-control-plane/04-optional-services.md:122-235` — separate Phase 9+ feature, YAGNI for CI).\n- Cross-service scenario tests (`tempest.scenario.*` — contradicts \"test services individually\", requires multi-service deployment with Nova, Neutron, Glance, Cinder).\n- Services beyond Keystone (no other service images or operators exist yet in the codebase).\n- Custom Tempest test authoring (uses upstream Tempest + official plugins only).\n- Production regression testing via CronJob scheduling (operator scope, not CI scope).\n- Modifications to `architecture/` directory (read-only reference).\n\n## Visualization\n\n```mermaid\nflowchart TD\n    subgraph CI[\"GitHub Actions CI Pipeline\"]\n        direction TB\n        UT[\"Unit Tests\\n#40;go test#41;\"]\n        IT[\"Integration Tests\\n#40;envtest#41;\"]\n        E2E[\"E2E Chainsaw Tests\\n#40;kind cluster#41;\"]\n        TT[\"Tempest API Tests\\n#40;NEW - appended to e2e-keystone#41;\"]\n    end\n\n    subgraph Build[\"Image Build Chain\"]\n        PB[\"python-base\\n#40;ubuntu:noble + Python 3.12#41;\"]\n        VB[\"venv-builder\\n#40;uv + build deps#41;\"]\n        SVC[\"keystone:2025.2\\n#40;git clone + source mount#41;\"]\n        TI[\"tempest:45.0.0\\n+ keystone-tempest-plugin 0.19.0\\n#40;PyPI install, NEW#41;\"]\n        PB --> VB\n        VB --> SVC\n        VB --> TI\n    end\n\n    subgraph Kind[\"Kind Cluster #40;forge-e2e#41;\"]\n        INFRA[\"Infrastructure Stack\\n#40;MariaDB, Memcached,\\nOpenBao, FluxCD, ESO#41;\"]\n        KS[\"Keystone Deployment\\n#40;Operator + keystone-basic CR#41;\"]\n        TP[\"Tempest Pod\\n#40;NEW#41;\"]\n        INFRA --> KS\n        KS --> TP\n    end\n\n    subgraph Publish[\"GHCR Publishing #40;build-tempest job, NEW#41;\"]\n        GHCR[\"ghcr.io/c5c3/tempest:45.0.0\"]\n    end\n\n    SVC --> E2E\n    SVC --> TT\n    TI --> TT\n    TI --> GHCR\n    TT --> Kind\n    TP -->|\"JUnit XML\"| REP[\"_output/reports/\"]\n```\n\n```mermaid\nsequenceDiagram\n    participant CI as CI Workflow<br/>#40;e2e-keystone job#41;\n    participant Kind as Kind Cluster<br/>#40;forge-e2e#41;\n    participant KS as Keystone Service<br/>#40;keystone-basic-api:5000#41;\n    participant TP as Tempest Container\n\n    Note over CI,KS: Existing steps #40;ci.yaml:217-295#41;\n    CI->>Kind: Create kind cluster + deploy infrastructure\n    CI->>Kind: Install CRDs + deploy Keystone operator\n    CI->>Kind: Apply Keystone CR #40;Chainsaw deploys this#41;\n    Kind->>KS: Keystone pods Ready #40;port 5000#41;\n    CI->>CI: Run Chainsaw E2E tests\n\n    Note over CI,TP: New Tempest steps #40;appended after line 295#41;\n    CI->>CI: Build python-base + venv-builder + tempest image\n    CI->>Kind: kind load docker-image tempest:45.0.0\n    CI->>Kind: Run Tempest pod with mounted tempest.conf\n    Kind->>TP: Start Tempest container\n    TP->>TP: tempest init + load tempest.conf\n    TP->>KS: Run tempest.api.identity.* tests\n    TP->>KS: Run keystone_tempest_plugin.tests.*\n    KS-->>TP: API responses\n    TP->>TP: Generate subunit output\n    TP-->>CI: Convert to JUnit XML in _output/reports/\n    CI->>CI: Upload artifact #40;e2e-tempest-keystone-junit-report#41;\n```\n\n## Key Components\n\n- **`images/tempest/Dockerfile`** (NEW): 3-stage build (`python-base` → `venv-builder` → `tempest`). Unlike service Dockerfiles (e.g., `images/keystone/Dockerfile`) which mount cloned source via `--build-context`, Tempest installs directly from PyPI: `uv pip install tempest==45.0.0 keystone-tempest-plugin==0.19.0 python-subunit junitxml --constraint /tmp/upper-constraints.txt`. Runtime stage copies virtualenv from `venv-builder` to `python-base`, runs as `openstack` user (UID 42424, defined in `images/python-base/Dockerfile:24-25`). Uses named build context `--build-context upper-constraints=releases/2025.2` for constraint mounting.\n- **`releases/2025.2/test-refs.yaml`** (NEW): Separate version-pinning file for test tooling — `tempest: \"45.0.0\"` and `keystone-tempest-plugin: \"0.19.0\"`. Keeps PyPI-based test tool versions distinct from git-ref-based `source-refs.yaml` (which holds `keystone: \"28.0.0\"`). CI reads this file via `yq` to resolve versions for the Dockerfile build args and `uv pip install`.\n- **`tests/tempest/keystone/tempest.conf`** (NEW): Minimal Tempest configuration — `[identity]` section with `uri_v3 = http://keystone-basic-api.openstack.svc:5000/v3`, `[auth]` admin credentials sourced from the `keystone-admin` ExternalSecret (provisioned by OpenBao bootstrap at `hack/deploy-infra.sh:577-603`), `[service_available]` with only `identity = true`.\n- **`tests/tempest/keystone/include-tests.txt` / `exclude-tests.txt`** (NEW): Regex patterns controlling test scope. Include: `tempest.api.identity` and `keystone_tempest_plugin.tests`. Exclude: tests requiring services not deployed (compute, network, volume, image). Follows the pattern established by `releases/2025.2/test-excludes/keystone.txt`.\n- **`.github/workflows/ci.yaml`** (MODIFIED): New steps appended to `e2e-keystone` job (after line 295) — resolve Tempest version from `test-refs.yaml`, build Tempest image chain (reusing `python-base` and `venv-builder` already built at lines 248-253), load into kind, run Tempest with `--subunit` output, convert to JUnit XML, upload as artifact `e2e-tempest-keystone-junit-report` with 14-day retention (matching existing pattern at lines 328-334).\n- **`.github/workflows/build-images.yaml`** (MODIFIED): New dedicated `build-tempest` job — builds the `python-base` → `venv-builder` → `tempest` chain without git-clone or source-mount steps. Reuses `python-base` and `venv-builder` images by digest (matching the existing `build-contexts: python-base=docker-image://...@${{ digest }}` pattern). Tags with version metadata, pushes to `ghcr.io/c5c3/tempest`, with SBOM generation (anchore/sbom-action), Grype scanning, GitHub attestations, and cosign signing — consistent with existing service images.\n- **`Makefile`** (MODIFIED): New targets `tempest-test` and `tempest-test SERVICE=keystone` for local execution (consistent with `e2e` target at line 214), delegating to `hack/run-tempest.sh`.\n- **`hack/run-tempest.sh`** (NEW): Script to build the Tempest image and run the container against the local kind cluster, handling image build, kind load, pod execution, and JUnit XML extraction.\n- **`_output/reports/`**: JUnit XML output from Tempest (via `subunit2junitxml`), alongside Chainsaw reports (configured in `tests/e2e/chainsaw-config.yaml:38-42`)."
+  "execution_history": [
+    {
+      "run_id": "d0dc0fe6-c1d1-424c-8588-0c5f5c6cde30",
+      "timestamp": "2026-03-28T10:02:31.712223",
+      "total_duration": 469.83133363723755,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 469.83133363723755,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
 }
