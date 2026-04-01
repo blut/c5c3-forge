@@ -1,0 +1,442 @@
+{
+  "feature_id": "CC-0037",
+  "title": "Add PodDisruptionBudget to Keystone operator",
+  "slug": "add-poddisruptionbudget-to-keystone-operator",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "**Size:** 🔧 small\n**Category:** backend\n**Priority:** high\n**Source:** Proposed for 'Implement PodDisruptionBudget\n  - In reconcileDeplo'\n\nImplement PDB support in the Keystone operator:\n\n1. **`buildPodDisruptionBudget()`** in `operators/keystone/internal/controller/reconcile_deployment.go`: Construct `policyv1.PodDisruptionBudget` named `{keystone.Name}-api`, using `commonLabels()` on ObjectMeta and `selectorLabels()` on `Spec.Selector.MatchLabels`. Use `minAvailable: 1` when `replicas > 1`, `maxUnavailable: 1` when `replicas == 1` to prevent drain deadlocks.\n\n2. **`EnsurePDB()`** in `internal/common/deployment/deployment.go`: Reusable get-or-create/update helper following the existing `EnsureDeployment`/`EnsureService` contract — set owner reference via `SetControllerReference` on create, patch spec on update, return error only (no readiness bool). Use symmetric DeepCopy-then-normalize before spec comparison per codebase patterns.\n\n3. **RBAC marker** on `Reconcile()` in `operators/keystone/internal/controller/keystone_controller.go`: Add `+kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete` alongside existing markers.\n\n4. **`SetupWithManager` watch** in `keystone_controller.go`: Add `Owns(&policyv1.PodDisruptionBudget{})` so PDB changes trigger reconciliation.\n\n5. **Import** `policyv1 \"k8s.io/api/policy/v1\"` in both controller and deployment helper files.\n\n6. **Call site** in `reconcileDeployment`: Invoke `buildPodDisruptionBudget()` + `EnsurePDB()` after `EnsureService`, before setting the `DeploymentReady` condition.\n\n7. **Tests** in `operators/keystone/internal/controller/reconcile_deployment_test.go`: Add `policyv1` to `deployTestScheme()`. Test PDB creation (owner ref, labels, selector matches Deployment pod selector), correct `minAvailable`/`maxUnavailable` for replica counts >1 and ==1, and update-on-replica-change behavior. Follow existing Gomega BDD patterns with `NewGomegaWithT`.\n\n**Rationale:** Keystone currently has no PodDisruptionBudget. During voluntary disruptions (kubectl drain, node upgrades, cluster maintenance), all Keystone API pods can be evicted simultaneously, causing a complete API outage. With a PDB, Kubernetes guarantees at least one pod remains available during rolling disruptions, providing zero-downtime resilience for the identity service that all other OpenStack components depend on.\n\n**Affected Areas:**\n- operators/keystone/internal/controller/reconcile_deployment.go\n- operators/keystone/internal/controller/reconcile_deployment_test.go\n- operators/keystone/internal/controller/keystone_controller.go\n- internal/common/deployment/deployment.go",
+  "stories": [
+    {
+      "title": "Operator ensures PDB exists for Keystone API pods during reconciliation",
+      "role": "cluster operator",
+      "want": "the Keystone operator to automatically create and manage a PodDisruptionBudget for the Keystone API deployment",
+      "so_that": "voluntary disruptions (node drains, upgrades) cannot evict all API pods simultaneously, preserving identity service availability",
+      "criteria": [
+        "Running reconcileDeployment creates a PodDisruptionBudget named {keystone.Name}-api in the same namespace as the Keystone CR",
+        "PDB ObjectMeta.Labels match commonLabels(keystone) output",
+        "PDB Spec.Selector.MatchLabels match selectorLabels(keystone) output, identical to the Deployment pod selector",
+        "PDB has an OwnerReference pointing to the Keystone CR with controller=true"
+      ]
+    },
+    {
+      "title": "PDB uses minAvailable when replicas > 1 and maxUnavailable when replicas == 1",
+      "role": "cluster operator",
+      "want": "the PDB to use the correct disruption strategy based on replica count",
+      "so_that": "single-replica deployments are not drain-deadlocked (minAvailable=1 blocks all evictions) and multi-replica deployments guarantee at least one pod remains available",
+      "criteria": [
+        "When spec.replicas > 1, PDB sets minAvailable=1 and does NOT set maxUnavailable",
+        "When spec.replicas == 1, PDB sets maxUnavailable=1 and does NOT set minAvailable",
+        "Changing replicas from 1 to >1 (or vice versa) updates the PDB spec on next reconciliation"
+      ]
+    },
+    {
+      "title": "PDB is updated when Keystone spec changes",
+      "role": "cluster operator",
+      "want": "the operator to reconcile the PDB when the Keystone CR or PDB is modified externally",
+      "so_that": "the PDB always reflects the current desired state and manual edits are corrected",
+      "criteria": [
+        "EnsurePDB updates the existing PDB spec when the desired spec differs from the live object",
+        "SetupWithManager includes Owns(&policyv1.PodDisruptionBudget{}) so PDB changes trigger reconciliation",
+        "RBAC markers grant get;list;watch;create;update;patch;delete on policy/poddisruptionbudgets"
+      ]
+    },
+    {
+      "title": "EnsurePDB is a reusable helper following the existing Ensure* contract",
+      "role": "developer",
+      "want": "a generic EnsurePDB helper in internal/common/deployment that other operators can reuse",
+      "so_that": "PDB management is consistent across all operators and follows the established get-or-create/update pattern",
+      "criteria": [
+        "EnsurePDB lives in internal/common/deployment/deployment.go alongside EnsureDeployment and EnsureService",
+        "Signature: func EnsurePDB(ctx, client.Client, *runtime.Scheme, client.Object, *policyv1.PodDisruptionBudget) error",
+        "On create: sets OwnerReference via controllerutil.SetControllerReference, then creates",
+        "On update: replaces entire Spec field of existing PDB, then updates",
+        "Returns error only (no readiness bool), matching EnsureService contract"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "reconcileDeployment SHALL build and ensure a PodDisruptionBudget named {keystone.Name}-api after ensuring the Service and before evaluating the DeploymentReady condition",
+      "priority": "SHALL",
+      "rationale": "Core feature requirement: PDB must be created/updated as part of the deployment sub-reconciler flow",
+      "scenarios": [
+        {
+          "name": "PDB created on first reconciliation",
+          "when": "reconcileDeployment runs and no PDB exists",
+          "then": "a PDB named {keystone.Name}-api is created in the Keystone namespace with correct labels and selector",
+          "and_then": [
+            "PDB has OwnerReference to the Keystone CR"
+          ]
+        },
+        {
+          "name": "PDB creation failure propagated",
+          "when": "EnsurePDB returns an error during reconcileDeployment",
+          "then": "reconcileDeployment returns (ctrl.Result{}, error) with wrapped error message 'ensuring PDB: ...'",
+          "and_then": [
+            "DeploymentReady condition is NOT set"
+          ]
+        },
+        {
+          "name": "PDB ensured after Service before condition check",
+          "when": "reconcileDeployment completes without error",
+          "then": "Deployment, Service, and PDB all exist in the namespace",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "buildPodDisruptionBudget SHALL set minAvailable=1 when replicas > 1 and maxUnavailable=1 when replicas == 1",
+      "priority": "SHALL",
+      "rationale": "Prevents drain deadlock: minAvailable=1 on a single-replica deployment blocks ALL evictions; maxUnavailable=1 allows the single pod to be evicted and rescheduled",
+      "scenarios": [
+        {
+          "name": "Multi-replica uses minAvailable",
+          "when": "keystone.Spec.Replicas is 3",
+          "then": "PDB Spec.MinAvailable is intstr.FromInt32(1) and Spec.MaxUnavailable is nil",
+          "and_then": []
+        },
+        {
+          "name": "Single-replica uses maxUnavailable",
+          "when": "keystone.Spec.Replicas is 1",
+          "then": "PDB Spec.MaxUnavailable is intstr.FromInt32(1) and Spec.MinAvailable is nil",
+          "and_then": []
+        },
+        {
+          "name": "Boundary: replicas == 2 uses minAvailable",
+          "when": "keystone.Spec.Replicas is 2",
+          "then": "PDB Spec.MinAvailable is intstr.FromInt32(1) and Spec.MaxUnavailable is nil",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "buildPodDisruptionBudget SHALL use commonLabels() on ObjectMeta.Labels and selectorLabels() on Spec.Selector.MatchLabels",
+      "priority": "SHALL",
+      "rationale": "Labels and selectors must be consistent with the Deployment for pod targeting and resource discoverability",
+      "scenarios": [
+        {
+          "name": "PDB labels match common labels",
+          "when": "buildPodDisruptionBudget is called",
+          "then": "PDB ObjectMeta.Labels equals commonLabels(keystone)",
+          "and_then": []
+        },
+        {
+          "name": "PDB selector matches deployment pod selector",
+          "when": "buildPodDisruptionBudget and buildKeystoneDeployment are called with the same Keystone CR",
+          "then": "PDB Spec.Selector.MatchLabels equals Deployment Spec.Selector.MatchLabels",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "EnsurePDB SHALL follow the get-or-create/update contract: SetControllerReference on create, replace Spec on update, return error only",
+      "priority": "SHALL",
+      "rationale": "Matches EnsureService/EnsureCronJob pattern for consistency across the codebase",
+      "scenarios": [
+        {
+          "name": "Creates PDB with owner reference when not found",
+          "when": "EnsurePDB is called and the PDB does not exist",
+          "then": "SetControllerReference sets ownership, then Create succeeds, returns nil",
+          "and_then": []
+        },
+        {
+          "name": "Updates existing PDB spec",
+          "when": "EnsurePDB is called and a PDB exists with a different spec",
+          "then": "existing.Spec is replaced with desired Spec, Update is called, returns nil",
+          "and_then": []
+        },
+        {
+          "name": "Propagates Get errors",
+          "when": "client.Get returns a non-NotFound error",
+          "then": "EnsurePDB returns wrapped error with format 'getting PodDisruptionBudget %s/%s: %w'",
+          "and_then": []
+        },
+        {
+          "name": "Propagates Create errors",
+          "when": "client.Create returns an error",
+          "then": "EnsurePDB returns wrapped error with format 'creating PodDisruptionBudget %s/%s: %w'",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "keystone_controller.go SHALL include an RBAC marker for policy/poddisruptionbudgets and an Owns watch for PodDisruptionBudget",
+      "priority": "SHALL",
+      "rationale": "RBAC is required for API access; Owns watch ensures PDB drift is corrected",
+      "scenarios": [
+        {
+          "name": "RBAC marker present",
+          "when": "controller-gen processes the RBAC markers",
+          "then": "generated role includes policy group, poddisruptionbudgets resource with get;list;watch;create;update;patch;delete verbs",
+          "and_then": []
+        },
+        {
+          "name": "Owns watch triggers reconciliation on PDB change",
+          "when": "an owned PDB is modified or deleted externally",
+          "then": "the owning Keystone CR is enqueued for reconciliation",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "policyv1 \"k8s.io/api/policy/v1\" SHALL be imported in reconcile_deployment.go, keystone_controller.go, and deployment.go",
+      "priority": "SHALL",
+      "rationale": "Go requires explicit imports for all referenced packages; missing imports cause compilation failure",
+      "scenarios": [
+        {
+          "name": "All three files compile with policyv1 import",
+          "when": "go build is run on the keystone operator and internal/common/deployment packages",
+          "then": "compilation succeeds with no missing import errors for policyv1 types",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "EnsurePDB unit tests SHALL cover create with owner ref, update, idempotency, and error scenarios in deployment_test.go",
+      "priority": "SHALL",
+      "rationale": "The reusable helper needs standalone test coverage independent of controller integration tests",
+      "scenarios": [
+        {
+          "name": "Create sets owner reference",
+          "when": "EnsurePDB is called with no existing PDB",
+          "then": "created PDB has OwnerReferences[0].Name == owner name, length 1",
+          "and_then": []
+        },
+        {
+          "name": "Update changes spec",
+          "when": "EnsurePDB is called with existing PDB with different MinAvailable",
+          "then": "PDB spec is updated to match desired",
+          "and_then": []
+        },
+        {
+          "name": "Idempotent operation",
+          "when": "EnsurePDB is called twice with same desired PDB",
+          "then": "no error, exactly one PDB exists in namespace",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "Controller-level tests SHALL verify PDB creation, labels, selector, replica-based strategy selection, and update-on-replica-change",
+      "priority": "SHALL",
+      "rationale": "End-to-end verification that buildPodDisruptionBudget + EnsurePDB integrate correctly within reconcileDeployment",
+      "scenarios": [
+        {
+          "name": "PDB created with correct name and owner ref",
+          "when": "reconcileDeployment runs with replicas=3",
+          "then": "PDB test-keystone-api exists with OwnerReference to test-keystone",
+          "and_then": []
+        },
+        {
+          "name": "PDB minAvailable for replicas=3",
+          "when": "reconcileDeployment runs with replicas=3",
+          "then": "PDB.Spec.MinAvailable == intstr.FromInt32(1), MaxUnavailable is nil",
+          "and_then": []
+        },
+        {
+          "name": "PDB maxUnavailable for replicas=1",
+          "when": "reconcileDeployment runs with single-replica Keystone",
+          "then": "PDB.Spec.MaxUnavailable == intstr.FromInt32(1), MinAvailable is nil",
+          "and_then": []
+        },
+        {
+          "name": "PDB spec updated when replicas change",
+          "when": "replicas changes from 3 to 1 and reconcileDeployment re-runs",
+          "then": "PDB switches from minAvailable=1 to maxUnavailable=1",
+          "and_then": []
+        },
+        {
+          "name": "PDB selector matches Deployment selector",
+          "when": "both Deployment and PDB are created",
+          "then": "PDB.Spec.Selector.MatchLabels == Deployment.Spec.Selector.MatchLabels",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add EnsurePDB helper and unit tests in internal/common/deployment (REQ-004, REQ-006, REQ-007)",
+      "description": "In internal/common/deployment/deployment.go: (1) Add import policyv1 \"k8s.io/api/policy/v1\". (2) Add EnsurePDB function following the EnsureService/EnsureCronJob contract — signature: func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, pdb *policyv1.PodDisruptionBudget) error. Logic: Get existing by ObjectKey; if NotFound → SetControllerReference + Create; if found → replace existing.Spec = pdb.Spec then Update. Wrap all errors with fmt.Errorf context. In deployment_test.go: (3) Add policyv1 import and policyv1.AddToScheme to newScheme(). (4) Add testPDB() factory returning a PDB with MinAvailable=1 and selector. (5) Add tests: TestEnsurePDB_creates (verify owner ref), TestEnsurePDB_updatesExisting (change MinAvailable, verify updated), TestEnsurePDB_idempotent (call twice, one PDB exists). Follow existing TestEnsureService_* and TestEnsureDeployment_* patterns.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-006",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add buildPodDisruptionBudget function and policyv1 import in reconcile_deployment.go (REQ-002, REQ-003, REQ-006)",
+      "description": "In operators/keystone/internal/controller/reconcile_deployment.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to imports alongside existing appsv1/corev1 imports. (2) Add buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget function after buildKeystoneService (after line 261). Name: fmt.Sprintf(\"%s-api\", keystone.Name). Namespace: keystone.Namespace. Labels: commonLabels(keystone). Spec.Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(keystone)}. Replica logic: replicas := int32(keystone.Spec.Replicas); if replicas > 1 { set MinAvailable = intstr.FromInt32(1) } else { set MaxUnavailable = intstr.FromInt32(1) }. Use intstr.IntOrString pointer for the set field, leave the other nil.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add PDB call site in reconcileDeployment (REQ-001)",
+      "description": "In reconcileDeployment function (line 83, after EnsureService block): Add pdb := buildPodDisruptionBudget(keystone) followed by if err := deployment.EnsurePDB(ctx, r.Client, r.Scheme, keystone, pdb); err != nil { return ctrl.Result{}, fmt.Errorf(\"ensuring PDB: %w\", err) }. This goes after the Service ensure block (line 82) and before the if !ready check (line 84).",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Add RBAC marker, policyv1 import, and Owns watch in keystone_controller.go (REQ-005, REQ-006)",
+      "description": "In operators/keystone/internal/controller/keystone_controller.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to the import block after batchv1 import. (2) Add RBAC marker after line 56: // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete. (3) In SetupWithManager, add .Owns(&policyv1.PodDisruptionBudget{}) after .Owns(&batchv1.CronJob{}) (after line 152).",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Add PDB tests in reconcile_deployment_test.go (REQ-008)",
+      "description": "In operators/keystone/internal/controller/reconcile_deployment_test.go: (1) Add policyv1 \"k8s.io/api/policy/v1\" to imports. (2) Add _ = policyv1.AddToScheme(s) to deployTestScheme(). (3) Add test TestReconcileDeployment_PDBCreated: run reconcileDeployment with deployTestKeystone (replicas=3), verify PDB test-keystone-api exists via client.Get, check OwnerReferences has len 1 with Name test-keystone. (4) Add TestReconcileDeployment_PDBLabelsAndSelector: verify PDB labels match commonLabels, PDB Spec.Selector.MatchLabels match selectorLabels, and PDB selector equals Deployment selector. (5) Add TestReconcileDeployment_PDBMinAvailableForMultipleReplicas: with replicas=3 verify MinAvailable=intstr.FromInt32(1) and MaxUnavailable is nil. (6) Add TestReconcileDeployment_PDBMaxUnavailableForSingleReplica: create Keystone with Replicas=1, verify MaxUnavailable=intstr.FromInt32(1) and MinAvailable is nil. (7) Add TestReconcileDeployment_PDBUpdatedOnReplicaChange: first reconcile with replicas=3, then change ks.Spec.Replicas=1, re-run reconcileDeployment, verify PDB switched from minAvailable to maxUnavailable. (8) Add TestBuildPodDisruptionBudget_BoundaryReplicas2: replicas=2, verify minAvailable=1. (9) Add TestReconcileDeployment_PDBSelectorMatchesDeployment: verify PDB and Deployment selector labels are identical. Follow existing Gomega BDD patterns with NewGomegaWithT(t).",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-008",
+        "REQ-002",
+        "REQ-003"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_creates",
+      "story": "EnsurePDB is a reusable helper following the existing Ensure* contract",
+      "expected": "When no PDB exists, EnsurePDB creates it with OwnerReferences[0].Name == owner name",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_updatesExisting",
+      "story": "EnsurePDB is a reusable helper following the existing Ensure* contract",
+      "expected": "When PDB exists with different spec, EnsurePDB updates the spec to match desired",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsurePDB_idempotent",
+      "story": "EnsurePDB is a reusable helper following the existing Ensure* contract",
+      "expected": "Calling EnsurePDB twice with same input succeeds with exactly one PDB in namespace",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBCreated",
+      "story": "Operator ensures PDB exists for Keystone API pods during reconciliation",
+      "expected": "After reconcileDeployment, PDB test-keystone-api exists with correct OwnerReference to test-keystone",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBLabelsAndSelector",
+      "story": "Operator ensures PDB exists for Keystone API pods during reconciliation",
+      "expected": "PDB labels match commonLabels, PDB selector matches Deployment selector (selectorLabels)",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMinAvailableForMultipleReplicas",
+      "story": "PDB uses minAvailable when replicas > 1 and maxUnavailable when replicas == 1",
+      "expected": "With replicas=3, PDB.Spec.MinAvailable == intstr.FromInt32(1) and MaxUnavailable is nil",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBMaxUnavailableForSingleReplica",
+      "story": "PDB uses minAvailable when replicas > 1 and maxUnavailable when replicas == 1",
+      "expected": "With replicas=1, PDB.Spec.MaxUnavailable == intstr.FromInt32(1) and MinAvailable is nil",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBUpdatedOnReplicaChange",
+      "story": "PDB is updated when Keystone spec changes",
+      "expected": "Changing replicas from 3 to 1 and re-running reconcileDeployment switches PDB from minAvailable=1 to maxUnavailable=1",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_PDBSelectorMatchesDeployment",
+      "story": "Operator ensures PDB exists for Keystone API pods during reconciliation",
+      "expected": "PDB Spec.Selector.MatchLabels is identical to Deployment Spec.Selector.MatchLabels",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestBuildPodDisruptionBudget_BoundaryReplicas2",
+      "story": "PDB uses minAvailable when replicas > 1 and maxUnavailable when replicas == 1",
+      "expected": "With replicas=2, PDB uses minAvailable=1 (boundary: smallest multi-replica value)",
+      "requirement_id": "REQ-002"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "go build ./... succeeds (compilation) — policyv1 imports present in all 3 files, no missing type references",
+    "go vet ./... passes with no warnings on keystone operator and internal/common/deployment packages",
+    "All existing tests pass (go test ./operators/keystone/... and go test ./internal/common/deployment/...) — no regressions",
+    "All new tests pass: EnsurePDB unit tests in deployment_test.go and PDB integration tests in reconcile_deployment_test.go",
+    "EnsurePDB follows the same get-or-create/update contract as EnsureService: SetControllerReference on create, replace Spec on update, error-only return, wrapped error messages with namespace/name context",
+    "RBAC marker on Reconcile() includes groups=policy,resources=poddisruptionbudgets with full CRUD verbs; SetupWithManager includes Owns(&policyv1.PodDisruptionBudget{})",
+    "PDB is named {keystone.Name}-api matching Deployment and Service naming convention",
+    "PDB uses minAvailable=1 when replicas > 1 and maxUnavailable=1 when replicas == 1 — no drain deadlock scenario",
+    "PDB labels use commonLabels(), PDB selector uses selectorLabels() matching Deployment pod selector exactly",
+    "Call site is after EnsureService and before DeploymentReady condition check in reconcileDeployment"
+  ],
+  "implementation_notes": "Architecture: This feature adds PodDisruptionBudget management to the existing reconcileDeployment sub-reconciler. No new sub-reconciler or condition type is needed — PDB is an operational resource managed alongside the Deployment and Service.\n\nData flow: Keystone CR spec.replicas → buildPodDisruptionBudget() constructs PDB object → EnsurePDB() creates or updates in cluster → Kubernetes scheduler respects PDB during voluntary disruptions.\n\nKey design decisions:\n1. EnsurePDB returns error only (not bool), matching EnsureService — PDB has no readiness concept.\n2. PDB spec is always replaced entirely (existing.Spec = pdb.Spec) matching the codebase pattern in EnsureCronJob. No server-assigned fields to preserve (unlike Service ClusterIP).\n3. minAvailable vs maxUnavailable logic prevents drain deadlock: a PDB with minAvailable=1 on a 1-replica deployment would block all evictions since Kubernetes cannot guarantee availability while evicting the only pod.\n4. Feature comment: // Feature: CC-0037 at the top of new functions.\n\nFiles modified:\n- internal/common/deployment/deployment.go — Add policyv1 import + EnsurePDB function (follows EnsureCronJob pattern from internal/common/job/job.go:110-138)\n- internal/common/deployment/deployment_test.go — Add policyv1 scheme registration + EnsurePDB unit tests (follows TestEnsureService_* pattern)\n- operators/keystone/internal/controller/reconcile_deployment.go — Add policyv1 import + buildPodDisruptionBudget function + call site in reconcileDeployment\n- operators/keystone/internal/controller/keystone_controller.go — Add policyv1 import + RBAC marker + Owns watch\n- operators/keystone/internal/controller/reconcile_deployment_test.go — Add policyv1 scheme registration + PDB test cases\n\nExisting patterns to follow:\n- Builder: buildKeystoneService() at reconcile_deployment.go:245-261 — returns *Type without creating\n- Ensure: EnsureCronJob() at job/job.go:110-138 — simplest error-only ensure pattern (no server-assigned field preservation)\n- Tests: TestEnsureService_creates at deployment_test.go:231-249 — fake client, owner ref verification\n- Controller tests: TestReconcileDeployment_DeploymentAndServiceCreated at reconcile_deployment_test.go:106-128",
+  "status_history": {
+    "proposed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T13:12:18.655812"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T14:24:04.840517"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T14:29:30.015312"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "6c079986-d1f2-41be-af4b-3bbb2dae31b5",
+      "timestamp": "2026-04-01T14:29:30.015337",
+      "total_duration": 318.79110455513,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 318.79110455513,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
