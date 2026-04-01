@@ -1,24 +1,561 @@
 {
   "feature_id": "CC-0038",
-  "title": "Add HorizontalPodAutoscaler sub-reconciler for optional autoscaling",
+  "title": "Add HorizontalPodAutoscaler sub-reconciler",
   "slug": "add-horizontalpodautoscaler-sub-reconciler",
-  "status": "proposed",
+  "status": "prepared",
   "phase": null,
   "summary": "",
   "description": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** high\n**Source:** HorizontalPodAutoscaler Sub-Reconciler\n\nAdd an optional `spec.autoscaling` field to the Keystone CRD that, when set, creates a `HorizontalPodAutoscaler` targeting the Keystone API Deployment. The HPA is reconciled via a new `reconcileHPA` sub-reconciler following the established condition contract pattern (`HPAReady` added to `subConditionTypes`). When `spec.autoscaling` is removed, the HPA is explicitly deleted. This enables production workloads to auto-scale based on CPU and/or memory utilization.\n\nThe sub-reconciler implements the optional sub-resource lifecycle with three paths:\n1. **spec.autoscaling nil + no existing HPA** → set `HPAReady=True` reason `HPANotRequired`, return early\n2. **spec.autoscaling nil + existing HPA found** → explicit `client.Delete`, set `HPAReady=True` reason `HPANotRequired`\n3. **spec.autoscaling set** → call `EnsureHPA` (create-or-update with `SetControllerReference`), set `HPAReady=True` reason `HPAReady`\n\nIncludes `AutoscalingSpec` struct (`MinReplicas`, `MaxReplicas`, `TargetCPUUtilization`, `TargetMemoryUtilization`), kubebuilder validation markers, CEL `XValidation` requiring at least one metric target, RBAC markers for `autoscaling` group, `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` watch, and unit tests.\n\n**Affected Areas:**\n- operators/keystone/api/v1alpha1/keystone_types.go\n- operators/keystone/internal/controller/reconcile_hpa.go\n- operators/keystone/internal/controller/reconcile_hpa_test.go\n- operators/keystone/internal/controller/keystone_controller.go\n- operators/keystone/internal/common/deployment/deployment.go",
-  "stories": [],
-  "requirements": [],
-  "tasks": [],
-  "test_specifications": [],
+  "stories": [
+    {
+      "title": "Operator user enables CPU-based autoscaling for Keystone API",
+      "role": "platform operator",
+      "want": "to set spec.autoscaling with a targetCPUUtilization so that the Keystone API Deployment is autoscaled based on CPU usage",
+      "so_that": "production workloads handle variable load without manual replica management",
+      "criteria": [
+        "Setting spec.autoscaling with targetCPUUtilization creates an HPA targeting the {name}-api Deployment",
+        "HPA minReplicas and maxReplicas match the values from spec.autoscaling",
+        "HPA metrics list contains a CPU resource metric with the specified average utilization target",
+        "HPAReady condition is set to True with reason HPAReady after successful reconciliation",
+        "HPA has an ownerReference pointing to the Keystone CR"
+      ]
+    },
+    {
+      "title": "Operator user enables memory-based autoscaling for Keystone API",
+      "role": "platform operator",
+      "want": "to set spec.autoscaling with a targetMemoryUtilization so that the Keystone API Deployment is autoscaled based on memory usage",
+      "so_that": "memory-intensive workloads scale appropriately without CPU being the only signal",
+      "criteria": [
+        "Setting spec.autoscaling with targetMemoryUtilization creates an HPA with a memory resource metric",
+        "HPA metrics list contains a memory resource metric with the specified average utilization target",
+        "Both CPU and memory metrics can be specified simultaneously",
+        "HPAReady condition is set to True with reason HPAReady"
+      ]
+    },
+    {
+      "title": "Operator user removes autoscaling from Keystone CR",
+      "role": "platform operator",
+      "want": "to remove spec.autoscaling so that the HPA is deleted and Keystone reverts to static replica management",
+      "so_that": "I can cleanly transition between autoscaled and fixed-replica operation",
+      "criteria": [
+        "Removing spec.autoscaling (setting to nil) deletes the existing HPA",
+        "HPAReady condition is set to True with reason HPANotRequired",
+        "No HPA resource remains in the namespace for this Keystone instance",
+        "Deployment continues to run with spec.replicas as its replica count"
+      ]
+    },
+    {
+      "title": "Operator user creates Keystone CR without autoscaling",
+      "role": "platform operator",
+      "want": "the Keystone operator to skip HPA creation when spec.autoscaling is not set",
+      "so_that": "the default behavior remains unchanged and the aggregate Ready condition is not blocked",
+      "criteria": [
+        "When spec.autoscaling is nil, no HPA is created",
+        "HPAReady condition is set to True with reason HPANotRequired",
+        "The aggregate Ready condition includes HPAReady and is not blocked by it",
+        "No HPA exists for the Keystone instance"
+      ]
+    },
+    {
+      "title": "Operator user submits invalid autoscaling spec",
+      "role": "platform operator",
+      "want": "to receive clear validation errors when my autoscaling configuration is invalid",
+      "so_that": "I can fix my configuration before it reaches the controller",
+      "criteria": [
+        "CEL XValidation rejects spec.autoscaling when neither targetCPUUtilization nor targetMemoryUtilization is set",
+        "Kubebuilder validation rejects maxReplicas < 1",
+        "Kubebuilder validation rejects targetCPUUtilization outside 1-100 range",
+        "Kubebuilder validation rejects targetMemoryUtilization outside 1-100 range"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The operator SHALL create a HorizontalPodAutoscaler targeting the Keystone API Deployment when spec.autoscaling is set",
+      "priority": "SHALL",
+      "rationale": "Core functionality: the HPA enables CPU/memory-based autoscaling of the Keystone API pods",
+      "scenarios": [
+        {
+          "name": "HPA created with CPU metric",
+          "when": "spec.autoscaling is set with targetCPUUtilization=80 and maxReplicas=10",
+          "then": "an HPA is created with scaleTargetRef pointing to {name}-api Deployment, maxReplicas=10, and a CPU resource metric at 80% average utilization",
+          "and_then": [
+            "HPAReady condition is set to True with reason HPAReady"
+          ]
+        },
+        {
+          "name": "HPA created with memory metric",
+          "when": "spec.autoscaling is set with targetMemoryUtilization=70 and maxReplicas=5",
+          "then": "an HPA is created with a memory resource metric at 70% average utilization",
+          "and_then": [
+            "HPAReady condition is set to True with reason HPAReady"
+          ]
+        },
+        {
+          "name": "HPA created with both metrics",
+          "when": "spec.autoscaling is set with both targetCPUUtilization=80 and targetMemoryUtilization=70",
+          "then": "the HPA metrics list contains both CPU and memory resource metrics",
+          "and_then": [
+            "HPAReady condition is set to True with reason HPAReady"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The operator SHALL set an ownerReference on the HPA so it is garbage-collected when the Keystone CR is deleted",
+      "priority": "SHALL",
+      "rationale": "Prevents orphaned HPAs when the Keystone CR is deleted; follows the established SetControllerReference pattern used by EnsureDeployment, EnsureService, and EnsurePDB",
+      "scenarios": [
+        {
+          "name": "HPA has ownerReference on creation",
+          "when": "an HPA is created by EnsureHPA",
+          "then": "the HPA has a controller ownerReference pointing to the Keystone CR",
+          "and_then": [
+            "ownerReference.name equals the Keystone CR name"
+          ]
+        },
+        {
+          "name": "HPA ownerReference restored after out-of-band removal",
+          "when": "the HPA exists but its ownerReference has been removed out-of-band",
+          "then": "EnsureHPA re-applies the ownerReference on the next reconciliation",
+          "and_then": [
+            "the HPA is updated with the correct ownerReference"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The operator SHALL explicitly delete the HPA when spec.autoscaling is removed from the Keystone CR",
+      "priority": "SHALL",
+      "rationale": "Owner reference handles CR deletion, but explicit deletion is needed when the field is removed to avoid leaving a stale HPA that conflicts with manual replica management",
+      "scenarios": [
+        {
+          "name": "HPA deleted when spec.autoscaling removed",
+          "when": "spec.autoscaling was set (HPA exists) and is then removed (set to nil)",
+          "then": "the existing HPA is explicitly deleted via client.Delete",
+          "and_then": [
+            "HPAReady condition is set to True with reason HPANotRequired"
+          ]
+        },
+        {
+          "name": "No error when HPA already absent",
+          "when": "spec.autoscaling is nil and no HPA exists for this instance",
+          "then": "reconcileHPA sets HPAReady=True with reason HPANotRequired and returns without error",
+          "and_then": [
+            "no delete call is made"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The operator SHALL set the HPAReady condition following the sub-reconciler condition contract with ObservedGeneration",
+      "priority": "SHALL",
+      "rationale": "HPAReady must participate in the aggregate Ready condition via conditions.AllTrue; ObservedGeneration is required by the established condition contract pattern",
+      "scenarios": [
+        {
+          "name": "HPAReady True when autoscaling is active",
+          "when": "spec.autoscaling is set and EnsureHPA succeeds",
+          "then": "HPAReady condition is True with reason HPAReady and ObservedGeneration equals keystone.Generation",
+          "and_then": [
+            "message indicates HPA is configured"
+          ]
+        },
+        {
+          "name": "HPAReady True when autoscaling is not required",
+          "when": "spec.autoscaling is nil",
+          "then": "HPAReady condition is True with reason HPANotRequired and ObservedGeneration equals keystone.Generation",
+          "and_then": [
+            "message indicates autoscaling is not configured"
+          ]
+        },
+        {
+          "name": "HPAReady participates in aggregate Ready",
+          "when": "HPAReady is added to subConditionTypes",
+          "then": "the aggregate Ready condition requires HPAReady=True to be True",
+          "and_then": [
+            "conditions.AllTrue includes HPAReady in its check"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The CRD SHALL validate the AutoscalingSpec with kubebuilder markers and CEL XValidation",
+      "priority": "SHALL",
+      "rationale": "Prevents invalid configurations from reaching the controller; CEL XValidation enforces that at least one metric target is specified, consistent with existing XValidation on DatabaseSpec and CacheSpec",
+      "scenarios": [
+        {
+          "name": "At least one metric target required",
+          "when": "spec.autoscaling is set with neither targetCPUUtilization nor targetMemoryUtilization",
+          "then": "the API server rejects the CR with a validation error from the CEL rule",
+          "and_then": [
+            "error message indicates at least one of targetCPUUtilization or targetMemoryUtilization must be set"
+          ]
+        },
+        {
+          "name": "MaxReplicas minimum enforced",
+          "when": "spec.autoscaling.maxReplicas is set to 0",
+          "then": "the API server rejects the CR with a validation error",
+          "and_then": [
+            "error indicates maxReplicas must be >= 1"
+          ]
+        },
+        {
+          "name": "Target utilization range enforced",
+          "when": "spec.autoscaling.targetCPUUtilization is set to 0 or 101",
+          "then": "the API server rejects the CR with a validation error",
+          "and_then": [
+            "error indicates value must be between 1 and 100"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The EnsureHPA common helper SHALL follow the get-or-create/update pattern with metadata reconciliation",
+      "priority": "SHALL",
+      "rationale": "Consistent with EnsurePDB pattern: create with SetControllerReference, update with ownerRef/labels/annotations reconciliation, skip API write when nothing changed",
+      "scenarios": [
+        {
+          "name": "HPA created when not found",
+          "when": "no HPA exists with the expected name",
+          "then": "EnsureHPA creates the HPA with SetControllerReference and returns nil",
+          "and_then": [
+            "the HPA has the correct spec and ownerReference"
+          ]
+        },
+        {
+          "name": "HPA updated when spec changes",
+          "when": "an HPA exists but its spec differs from the desired state",
+          "then": "EnsureHPA updates the spec, labels, annotations, and ownerReference",
+          "and_then": [
+            "the API write only occurs if something actually changed"
+          ]
+        },
+        {
+          "name": "No API write when nothing changed",
+          "when": "EnsureHPA is called with the same desired state as the existing HPA",
+          "then": "no Update call is made to the API server",
+          "and_then": [
+            "function returns nil without error"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The controller SHALL have RBAC permissions for the autoscaling API group and SHALL watch owned HPAs",
+      "priority": "SHALL",
+      "rationale": "Without RBAC markers, the controller cannot manage HPAs; without the Owns watch, HPA changes are not reconciled",
+      "scenarios": [
+        {
+          "name": "RBAC marker present",
+          "when": "the controller is deployed",
+          "then": "the generated ClusterRole includes get;list;watch;create;update;patch;delete on autoscaling/horizontalpodautoscalers",
+          "and_then": []
+        },
+        {
+          "name": "Owns watch registered",
+          "when": "SetupWithManager is called",
+          "then": "the controller watches HorizontalPodAutoscaler resources via Owns()",
+          "and_then": [
+            "changes to owned HPAs trigger reconciliation"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The reconcileHPA sub-reconciler SHALL propagate errors from EnsureHPA and HPA deletion",
+      "priority": "SHALL",
+      "rationale": "Error propagation ensures the reconciler retries on transient failures and the operator surfaces problems via status conditions",
+      "scenarios": [
+        {
+          "name": "EnsureHPA error propagated",
+          "when": "EnsureHPA returns an error (e.g., API server unreachable)",
+          "then": "reconcileHPA wraps and returns the error",
+          "and_then": [
+            "the error message contains 'ensuring HorizontalPodAutoscaler'"
+          ]
+        },
+        {
+          "name": "Delete error propagated",
+          "when": "client.Delete returns an error during HPA cleanup",
+          "then": "reconcileHPA wraps and returns the error",
+          "and_then": [
+            "the error message contains 'deleting HorizontalPodAutoscaler'"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add AutoscalingSpec struct and Autoscaling field to KeystoneSpec with kubebuilder markers and CEL XValidation (REQ-005)",
+      "description": "In `operators/keystone/api/v1alpha1/keystone_types.go`: (1) Add `AutoscalingSpec` struct with fields `MinReplicas *int32` (optional, kubebuilder:validation:Minimum=1), `MaxReplicas int32` (required, kubebuilder:validation:Minimum=1), `TargetCPUUtilization *int32` (optional, kubebuilder:validation:Minimum=1,Maximum=100), `TargetMemoryUtilization *int32` (optional, kubebuilder:validation:Minimum=1,Maximum=100). (2) Add CEL XValidation rule on AutoscalingSpec: `has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)` with message 'at least one of targetCPUUtilization or targetMemoryUtilization must be set'. (3) Add `Autoscaling *AutoscalingSpec` field to `KeystoneSpec` with `+optional` and `json:\"autoscaling,omitempty\"` tags, following the existing `Federation *FederationSpec` pointer-for-optional pattern. (4) Add unit test for zero-value check in `keystone_types_test.go` verifying `spec.Autoscaling` is nil by default. (5) Run `make generate` to regenerate deepcopy.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Add EnsureHPA common helper function to internal/common/deployment/deployment.go with unit tests (REQ-006)",
+      "description": "In `internal/common/deployment/deployment.go`: (1) Add `autoscalingv2 \"k8s.io/api/autoscaling/v2\"` import. (2) Implement `EnsureHPA(ctx, c, scheme, owner, hpa)` following EnsurePDB pattern exactly: Get→IsNotFound→Create with SetControllerReference; on existing: snapshot via DeepCopy, re-apply SetControllerReference, merge labels, merge annotations, set spec, guard Update with apiequality.Semantic.DeepEqual check on Spec/Labels/Annotations/OwnerReferences. Returns `error` only. (3) Add `autoscalingv2` scheme registration to `newScheme()` in `deployment_test.go`. (4) Add `testHPA()` helper returning a minimal HPA. (5) Add tests: `TestEnsureHPA_creates`, `TestEnsureHPA_updatesExisting`, `TestEnsureHPA_idempotent`, `TestEnsureHPA_reconciles_ownerRef_on_update`, `TestEnsureHPA_merges_labels_on_update`, `TestEnsureHPA_merges_annotations_on_update` — all mirroring the EnsurePDB test structure.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-006",
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add reconcileHPA sub-reconciler with buildKeystoneHPA and three-path lifecycle logic (REQ-001, REQ-003, REQ-004, REQ-008)",
+      "description": "Create new file `operators/keystone/internal/controller/reconcile_hpa.go`: (1) Implement `reconcileHPA(ctx, keystone, configMapName) (ctrl.Result, error)` with three paths: Path 1 — spec.autoscaling nil + no existing HPA (IsNotFound) → set HPAReady=True reason HPANotRequired, return early. Path 2 — spec.autoscaling nil + existing HPA found → client.Delete, set HPAReady=True reason HPANotRequired. Path 3 — spec.autoscaling set → call buildKeystoneHPA, call deployment.EnsureHPA, set HPAReady=True reason HPAReady. Error wrapping: 'ensuring HorizontalPodAutoscaler' and 'deleting HorizontalPodAutoscaler'. HPA name: `{keystone.Name}-api` (same as Deployment). (2) Implement `buildKeystoneHPA(keystone)` returning `*autoscalingv2.HorizontalPodAutoscaler` with: scaleTargetRef={apiVersion:apps/v1, kind:Deployment, name:{name}-api}, minReplicas from spec.autoscaling.MinReplicas, maxReplicas from spec.autoscaling.MaxReplicas, metrics built conditionally from TargetCPUUtilization and TargetMemoryUtilization (only non-nil fields), commonLabels. (3) All conditions use conditions.SetCondition with ObservedGeneration=keystone.Generation.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-003",
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add reconcileHPA unit tests covering all three lifecycle paths and error scenarios (REQ-001, REQ-003, REQ-004, REQ-008)",
+      "description": "Create new file `operators/keystone/internal/controller/reconcile_hpa_test.go`: (1) `hpaTestScheme()` registering clientgoscheme, autoscalingv2, keystonev1alpha1. (2) `hpaTestKeystone()` returning minimal valid CR (reuse pattern from deployTestKeystone). (3) `newHPATestReconciler(s, objs...)` with fake client, status subresource, fake recorder. (4) Tests: `TestReconcileHPA_AutoscalingNil_NoExistingHPA_SetsHPANotRequired` — verifies HPAReady=True reason=HPANotRequired, no HPA created. `TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA` — pre-creates HPA, verifies deletion and HPANotRequired condition. `TestReconcileHPA_AutoscalingSet_CreatesHPA` — verifies HPA created with correct scaleTargetRef, metrics, ownerRef. `TestReconcileHPA_AutoscalingSet_CPUOnly` — CPU metric only, no memory metric. `TestReconcileHPA_AutoscalingSet_MemoryOnly` — memory metric only, no CPU metric. `TestReconcileHPA_AutoscalingSet_BothMetrics` — both CPU and memory metrics present. `TestReconcileHPA_AutoscalingSet_MinReplicasOmitted` — MinReplicas nil on HPA. `TestReconcileHPA_AutoscalingSet_MinReplicasSet` — MinReplicas correctly propagated. `TestReconcileHPA_ConditionObservedGeneration` — ObservedGeneration matches keystone.Generation for both active and not-required paths. `TestReconcileHPA_EnsureError_Propagated` — interceptor-injected create error, verifies error wrapping. `TestReconcileHPA_DeleteError_Propagated` — interceptor-injected delete error, verifies error wrapping. `TestReconcileHPA_HPALabelsAndOwnerReference` — verifies commonLabels and ownerReference on created HPA. `TestBuildKeystoneHPA_ScaleTargetRef` — verifies scaleTargetRef points to correct Deployment. `TestBuildKeystoneHPA_Labels` — verifies commonLabels on HPA ObjectMeta.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-003",
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Wire reconcileHPA into main controller: subConditionTypes, RBAC, Owns watch, reconcile chain (REQ-004, REQ-007)",
+      "description": "In `operators/keystone/internal/controller/keystone_controller.go`: (1) Add `autoscalingv2 \"k8s.io/api/autoscaling/v2\"` import. (2) Add `\"HPAReady\"` to `subConditionTypes` slice (after DeploymentReady, before BootstrapReady). (3) Add RBAC marker: `// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete` (after existing policy RBAC marker). (4) Add `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` to SetupWithManager (after existing Owns(&policyv1.PodDisruptionBudget{})). (5) Add reconcileHPA call after reconcileDeployment in the Reconcile method: `if result, err := r.reconcileHPA(ctx, &keystone, configMapName); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }` — between the reconcileDeployment and reconcileBootstrap blocks.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-004",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Add reference documentation for the spec.autoscaling field",
+      "description": "Create `docs/reference/backend/keystone-autoscaling.md`: (1) Document the AutoscalingSpec struct fields with types, constraints, and defaults. (2) Document the CEL validation rule. (3) Document the three reconciliation paths (autoscaling nil/existing HPA/active). (4) Include a minimal example YAML snippet showing spec.autoscaling with CPU and memory targets. (5) Reference the HPAReady condition semantics (HPAReady vs HPANotRequired reasons).",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-001",
+        "REQ-005"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_types_test.go",
+      "test_function": "TestAutoscalingSpecZeroValue",
+      "story": "Operator user creates Keystone CR without autoscaling",
+      "expected": "AutoscalingSpec zero value should have Autoscaling field as nil on KeystoneSpec [unit]",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_creates",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should create HPA with ownerReference when not found [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_updatesExisting",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should update existing HPA spec when it differs from desired [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_idempotent",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should be idempotent — calling twice with same desired state should not error [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_reconciles_ownerRef_on_update",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should restore ownerReference if removed out-of-band [unit]",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_merges_labels_on_update",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should merge desired labels with existing user-added labels [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "internal/common/deployment/deployment_test.go",
+      "test_function": "TestEnsureHPA_merges_annotations_on_update",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "EnsureHPA should merge desired annotations with existing annotations [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingNil_NoExistingHPA_SetsHPANotRequired",
+      "story": "Operator user creates Keystone CR without autoscaling",
+      "expected": "When spec.autoscaling is nil and no HPA exists, HPAReady=True reason=HPANotRequired [unit]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA",
+      "story": "Operator user removes autoscaling from Keystone CR",
+      "expected": "When spec.autoscaling is nil and HPA exists, HPA is deleted and HPAReady=True reason=HPANotRequired [unit]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_CreatesHPA",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "When spec.autoscaling is set, HPA is created with correct scaleTargetRef and metrics [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_CPUOnly",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "When only targetCPUUtilization is set, HPA metrics list contains only CPU metric [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_MemoryOnly",
+      "story": "Operator user enables memory-based autoscaling for Keystone API",
+      "expected": "When only targetMemoryUtilization is set, HPA metrics list contains only memory metric [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_BothMetrics",
+      "story": "Operator user enables memory-based autoscaling for Keystone API",
+      "expected": "When both targetCPUUtilization and targetMemoryUtilization are set, HPA metrics list contains both [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_MinReplicasOmitted",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "When MinReplicas is nil, HPA.Spec.MinReplicas is nil (K8s defaults to 1) [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_AutoscalingSet_MinReplicasSet",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "When MinReplicas is set to 2, HPA.Spec.MinReplicas equals 2 [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_ConditionObservedGeneration",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "HPAReady condition has ObservedGeneration matching keystone.Generation for both active and not-required paths [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_EnsureError_Propagated",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "When EnsureHPA fails, error is wrapped with 'ensuring HorizontalPodAutoscaler' [unit]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_DeleteError_Propagated",
+      "story": "Operator user removes autoscaling from Keystone CR",
+      "expected": "When client.Delete fails during HPA cleanup, error is wrapped with 'deleting HorizontalPodAutoscaler' [unit]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestReconcileHPA_HPALabelsAndOwnerReference",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "Created HPA has commonLabels and ownerReference pointing to Keystone CR [unit]",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_ScaleTargetRef",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "buildKeystoneHPA produces HPA with scaleTargetRef pointing to {name}-api Deployment [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_hpa_test.go",
+      "test_function": "TestBuildKeystoneHPA_Labels",
+      "story": "Operator user enables CPU-based autoscaling for Keystone API",
+      "expected": "buildKeystoneHPA produces HPA with commonLabels on ObjectMeta [unit]",
+      "requirement_id": "REQ-001"
+    }
+  ],
   "affected_files": [],
   "similar_patterns": [],
-  "review_criteria": [],
-  "implementation_notes": "",
+  "review_criteria": [
+    "AutoscalingSpec has correct kubebuilder validation markers (Minimum/Maximum) and CEL XValidation rule requiring at least one metric target",
+    "EnsureHPA follows EnsurePDB pattern exactly: create with SetControllerReference, update with DeepCopy+apiequality guard, label/annotation merge, ownerRef reconciliation",
+    "reconcileHPA correctly implements all three lifecycle paths: nil+no-HPA (skip), nil+existing-HPA (delete), set (ensure)",
+    "HPAReady condition always includes ObservedGeneration=keystone.Generation and uses correct reasons (HPAReady vs HPANotRequired)",
+    "RBAC marker includes all required verbs (get;list;watch;create;update;patch;delete) for autoscaling group",
+    "Owns(&autoscalingv2.HorizontalPodAutoscaler{}) is registered in SetupWithManager",
+    "All unit tests pass: EnsureHPA tests in deployment_test.go, reconcileHPA tests in reconcile_hpa_test.go, types test in keystone_types_test.go",
+    "Error messages from reconcileHPA wrap errors with descriptive context ('ensuring HorizontalPodAutoscaler', 'deleting HorizontalPodAutoscaler')",
+    "buildKeystoneHPA produces correct scaleTargetRef (apiVersion, kind, name) and conditional metrics list",
+    "go vet and golangci-lint pass with no errors on all modified packages"
+  ],
+  "implementation_notes": "## Architecture\n\n```\n┌────────────────────────────────────┐\n│         Keystone CR                │\n│  spec.autoscaling: *AutoscalingSpec│\n└────────────┬───────────────────────┘\n             │\n             ▼\n┌────────────────────────────────────┐\n│       reconcileHPA()               │\n│  ├─ autoscaling nil?               │\n│  │  ├─ HPA exists? → Delete        │\n│  │  └─ no HPA → skip               │\n│  └─ autoscaling set?               │\n│     └─ buildKeystoneHPA()          │\n│        └─ EnsureHPA()              │\n└────────────┬───────────────────────┘\n             │\n             ▼\n┌────────────────────────────────────┐\n│   HPA (autoscaling/v2)             │\n│   scaleTargetRef: {name}-api       │\n│   metrics: [cpu, memory]           │\n└────────────┬───────────────────────┘\n             │\n             ▼\n┌────────────────────────────────────┐\n│   Deployment: {name}-api           │\n└────────────────────────────────────┘\n```\n\n## Data Flow\n\n1. User sets `spec.autoscaling` on Keystone CR\n2. Controller reconcile loop reaches `reconcileHPA` (after `reconcileDeployment`)\n3. `reconcileHPA` reads `spec.autoscaling` pointer\n4. If set: builds HPA via `buildKeystoneHPA`, calls `EnsureHPA` (create-or-update)\n5. If nil: checks for existing HPA, deletes if found\n6. Sets `HPAReady` condition in both paths\n7. HPA targets `{name}-api` Deployment via `scaleTargetRef`\n\n## Key Decisions\n\n- **Separate file for reconcileHPA**: Unlike PDB which is embedded in reconcileDeployment, HPA has its own condition type and optional lifecycle, warranting its own file.\n- **EnsureHPA follows EnsurePDB exactly**: Same get-or-create/update pattern with metadata reconciliation and idempotency guard.\n- **HPA name matches Deployment name**: `{name}-api` — consistent naming, easy to correlate.\n- **spec.replicas unchanged**: The Deployment keeps spec.replicas as initial/fallback; HPA governs actual scaling range via minReplicas/maxReplicas.\n- **configMapName parameter**: Passed for chain consistency even though reconcileHPA doesn't use it — all sub-reconcilers share the same signature.\n\n## Pitfalls\n\n- Must run `make generate` after types change to regenerate deepcopy methods.\n- Adding HPAReady to subConditionTypes causes a brief Ready=False transition for existing CRs until the next reconciliation sets HPAReady=True.\n- The HPA scaleTargetRef.name MUST match `fmt.Sprintf(\"%s-api\", keystone.Name)` exactly — verify in buildKeystoneHPA tests.",
   "status_history": {
     "proposed": {
       "github_account": "berendt",
       "timestamp": "2026-04-01T13:25:56.078952"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T18:33:14.438606"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T18:39:01.027625"
     }
   },
-  "elaboration": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** high\n\n---\n\n## Open Questions\n\nAll questions have been answered.\n\n- **Metric validation approach:** Kubebuilder CEL `XValidation` on `AutoscalingSpec` (consistent with existing `XValidation` usage on `DatabaseSpec` and `CacheSpec` in `keystone_types.go`).\n\n---\n\n## Summary\n\nAdd an optional `spec.autoscaling` field to the Keystone CRD that, when set, creates a `HorizontalPodAutoscaler` targeting the Keystone API Deployment. The HPA is reconciled via a new `reconcileHPA` sub-reconciler called after `reconcileDeployment`, following the established condition contract pattern (`HPAReady` added to `subConditionTypes`). When `spec.autoscaling` is removed, the HPA is explicitly deleted. This enables production workloads to auto-scale based on CPU and/or memory utilization instead of relying on static replica counts.\n\n---\n\n## Scope\n\n**Included:**\n- New `AutoscalingSpec` struct in `api/v1alpha1/keystone_types.go` (`MinReplicas *int32`, `MaxReplicas int32`, `TargetCPUUtilization *int32`, `TargetMemoryUtilization *int32`)\n- Optional `Autoscaling *AutoscalingSpec` field on `KeystoneSpec` (pointer-for-optional pattern, matching `Federation *FederationSpec`)\n- Kubebuilder validation markers (min/max bounds) + CEL `XValidation` rule requiring at least one of `targetCPUUtilization` or `targetMemoryUtilization` to be non-nil (matches existing CEL usage on `DatabaseSpec`/`CacheSpec`)\n- `reconcileHPA` sub-reconciler in `internal/controller/reconcile_hpa.go` with condition type `HPAReady`\n- `HPAReady` added to `subConditionTypes` slice in `keystone_controller.go` (participates in aggregate ready check via `conditions.AllTrue`)\n- `reconcileHPA` called after `reconcileDeployment` (index 7 in the chain, before `reconcileBootstrap`) — signature: `(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)` for chain consistency\n- `EnsureHPA` common helper in `internal/common/deployment/deployment.go` following `EnsureService` pattern (returns `error` only, sets owner reference via `controllerutil.SetControllerReference`, updates spec on existing)\n- Explicit HPA deletion when `spec.autoscaling` is nil (owner reference handles CR deletion; explicit delete handles field removal)\n- RBAC marker: `+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete`\n- `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` watch in `SetupWithManager` (alongside existing `Owns` for Deployment, Service, ConfigMap, Job, CronJob)\n- `autoscalingv2 \"k8s.io/api/autoscaling/v2\"` import added to controller, common helper, and test files (not currently imported anywhere in the codebase)\n- `autoscalingv2` scheme registration in test helper (`hpaTestScheme()`)\n- Unit tests in `internal/controller/reconcile_hpa_test.go` using `NewGomegaWithT` + `fake.NewClientBuilder` pattern (matching `reconcile_deployment_test.go`)\n\n**Excluded:**\n- Custom metrics or external metrics (YAGNI — CPU/memory covers the stated requirement)\n- VPA (Vertical Pod Autoscaler) — different concern, not requested\n- KEDA integration — not requested\n- Webhook validation — no webhook infrastructure exists; kubebuilder CRD markers + CEL suffice\n- Scaling behavior configuration (`spec.behavior`) — YAGNI, additive later without breaking changes\n- Changes to `reconcileDeployment` logic — `spec.replicas` remains on the Deployment as initial/fallback; HPA governs actual scaling range\n\n---\n\n## Visualization\n\n```mermaid\nflowchart TD\n    R[\"Reconcile Loop\"] --> S[\"reconcileSecrets\"]\n    S --> C[\"reconcileConfig\"]\n    C --> F[\"reconcileFernetKeys\"]\n    F --> CK[\"reconcileCredentialKeys\"]\n    CK --> DB[\"reconcileDatabase\"]\n    DB --> D[\"reconcileDeployment\"]\n    D --> HPA[\"reconcileHPA #40;NEW#41;\"]\n    HPA --> B[\"reconcileBootstrap\"]\n    B --> RDY[\"setReadyCondition\"]\n\n    style HPA fill:#2d6a4f,stroke:#1b4332,color:#fff\n```\n\n```mermaid\nflowchart LR\n    CR[\"Keystone CR\\nspec.autoscaling\"] --> REC[\"reconcileHPA\"]\n    REC -->|\"autoscaling set\"| ENSURE[\"EnsureHPA\\ncreate or update\"]\n    REC -->|\"autoscaling nil\"| DEL[\"Delete HPA if exists\\nset HPAReady=True\\nreason: HPANotRequired\"]\n    ENSURE --> HPA[\"HPA Resource\\nautoscaling/v2\"]\n    HPA -->|\"scaleTargetRef\"| DEPLOY[\"Deployment\\nkeystone.Name + -api\"]\n    DEL -.->|\"removes\"| HPA\n\n    style REC fill:#2d6a4f,stroke:#1b4332,color:#fff\n```\n\n```mermaid\nstateDiagram-v2\n    [*] --> NoHPA: spec.autoscaling is nil\n    NoHPA --> HPACreated: spec.autoscaling set\n    HPACreated --> HPAReady: reconciled successfully\n    HPAReady --> HPAUpdated: spec.autoscaling changed\n    HPAUpdated --> HPAReady: reconciled\n    HPAReady --> NoHPA: spec.autoscaling removed\n    HPACreated --> NoHPA: spec.autoscaling removed\n```\n\n---\n\n## Key Components\n\n- **`AutoscalingSpec`** (`api/v1alpha1/keystone_types.go`): New struct with `MinReplicas *int32`, `MaxReplicas int32`, `TargetCPUUtilization *int32`, `TargetMemoryUtilization *int32`. Added as optional `Autoscaling *AutoscalingSpec` on `KeystoneSpec`. Kubebuilder markers for bounds + CEL `XValidation` rule requiring at least one metric target (consistent with existing `XValidation` on `DatabaseSpec` line 48, `CacheSpec` line 53).\n- **`reconcileHPA`** (`internal/controller/reconcile_hpa.go`): New sub-reconciler. If `spec.autoscaling` is nil → delete any existing HPA, set `HPAReady=True` reason `HPANotRequired`. If set → call `EnsureHPA` with built HPA, set `HPAReady=True` reason `HPAReady`. Condition setting follows `conditions.SetCondition` pattern with `ObservedGeneration`.\n- **`buildKeystoneHPA`** (`internal/controller/reconcile_hpa.go`): Builds `autoscalingv2.HorizontalPodAutoscaler` with `scaleTargetRef` pointing to `{keystone.Name}-api` Deployment. Populates `metrics` slice from `TargetCPUUtilization`/`TargetMemoryUtilization` (only metrics that are non-nil).\n- **`EnsureHPA`** (`internal/common/deployment/deployment.go`): Common helper following `EnsureService` pattern (lines 75-127) — get-or-create with `SetControllerReference`, update spec on existing. Returns `error` only (no readiness concept for HPAs).\n- **`subConditionTypes` + RBAC + Watch** (`internal/controller/keystone_controller.go`): Add `\"HPAReady\"` to `subConditionTypes` slice (line 29). Add RBAC marker for `autoscaling` group (after line 53). Add `Owns(&autoscalingv2.HorizontalPodAutoscaler{})` to `SetupWithManager` (after existing `Owns` calls).\n- **Tests** (`internal/controller/reconcile_hpa_test.go`): Unit tests following `reconcile_deployment_test.go` patterns — `hpaTestScheme()` with `autoscalingv2.AddToScheme`, `NewGomegaWithT`, fake client builder with `WithStatusSubresource`. Covers: HPA creation with correct scaleTargetRef/metrics/owner reference, HPA update on spec change, HPA deletion when `spec.autoscaling` removed, skip with `HPANotRequired` when autoscaling is nil, CPU-only and memory-only metric configurations."
+  "execution_history": [
+    {
+      "run_id": "1b94cf92-0297-423b-bdff-519e7dfe7dda",
+      "timestamp": "2026-04-01T18:39:01.027651",
+      "total_duration": 343.758163690567,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 343.758163690567,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
 }
