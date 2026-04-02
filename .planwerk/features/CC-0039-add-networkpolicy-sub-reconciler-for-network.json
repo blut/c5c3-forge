@@ -1,0 +1,621 @@
+{
+  "feature_id": "CC-0039",
+  "title": "Add NetworkPolicy sub-reconciler for network isolation",
+  "slug": "add-networkpolicy-sub-reconciler-for-network",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "**Size:** 🔨 medium\n**Category:** backend\n**Priority:** critical\n**Source:** NetworkPolicy Sub-Reconciler\n\nAdd an optional `spec.networkPolicy` field to the Keystone CRD that, when set, creates Kubernetes `NetworkPolicy` resources restricting traffic to and from Keystone API pods. Ingress is limited to port 5000 from user-defined namespace/pod selectors. Egress is auto-derived from existing spec fields (`spec.database.ClusterRef` → MariaDB:3306, `spec.cache.ClusterRef` → Memcached:11211) plus implicit DNS (UDP+TCP 53), with support for additional user-defined egress rules via `additionalEgress`. This implements Zero-Trust/Defense-in-Depth for the Identity Service.\n\nThe sub-reconciler implements the optional sub-resource lifecycle with three paths:\n1. **spec.networkPolicy nil + no existing NetworkPolicy** → set `NetworkPolicyReady=True` reason `NetworkPolicyNotRequired`, return early\n2. **spec.networkPolicy nil + existing NetworkPolicy found** → explicit `client.Delete`, set `NetworkPolicyReady=True` reason `NetworkPolicyNotRequired`\n3. **spec.networkPolicy set** → build NetworkPolicy with auto-derived egress + user ingress/additional egress → create-or-update with `SetControllerReference`, set `NetworkPolicyReady=True`\n\nDesign decisions: OpenBao egress is excluded (ESO controller handles PushSecret communication, not Keystone pods). Brownfield auto-derivation is excluded (external host:port targets are too varied; users configure via `additionalEgress`).\n\nIncludes `NetworkPolicySpec` struct, CEL `XValidation` requiring at least one ingress source, RBAC markers for `networking.k8s.io`, `Owns(&networkingv1.NetworkPolicy{})` watch, and unit tests.\n\n**Affected Areas:**\n- operators/keystone/api/v1alpha1/keystone_types.go\n- operators/keystone/internal/controller/reconcile_networkpolicy.go\n- operators/keystone/internal/controller/reconcile_networkpolicy_test.go\n- operators/keystone/internal/controller/keystone_controller.go",
+  "stories": [
+    {
+      "title": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "role": "platform engineer",
+      "want": "to set spec.networkPolicy on the Keystone CR to restrict pod traffic",
+      "so_that": "Keystone API pods communicate only with authorized sources and backends, implementing defense-in-depth for the identity service",
+      "criteria": [
+        "A NetworkPolicy named '{keystoneName}-api' is created in the Keystone namespace with ownerReference to the Keystone CR",
+        "Ingress rules restrict traffic to TCP port 5000 from user-specified namespace/pod selectors",
+        "Egress auto-derives MariaDB (TCP 3306) from database.ClusterRef and Memcached (TCP 11211) from cache.ClusterRef",
+        "DNS egress (UDP+TCP 53 to kube-system) is always included",
+        "NetworkPolicyReady condition is set to True with reason NetworkPolicyReady and correct ObservedGeneration",
+        "NetworkPolicy ObjectMeta has commonLabels (app.kubernetes.io/name, instance, managed-by)"
+      ]
+    },
+    {
+      "title": "Platform engineer configures ingress sources for Keystone API access",
+      "role": "platform engineer",
+      "want": "to specify which namespaces and pods can reach Keystone API on port 5000",
+      "so_that": "only authorized service consumers (Nova, Glance, Horizon, ingress controllers) can access the identity service",
+      "criteria": [
+        "Each ingress source has a required namespaceSelector (map[string]string label selector)",
+        "Each ingress source has an optional podSelector (map[string]string label selector)",
+        "CEL XValidation rejects spec.networkPolicy with zero ingress sources",
+        "All specified sources appear as From peers in a single NetworkPolicy ingress rule on TCP 5000"
+      ]
+    },
+    {
+      "title": "Platform engineer disables NetworkPolicy by removing the field",
+      "role": "platform engineer",
+      "want": "to remove spec.networkPolicy (set to nil) to disable network isolation",
+      "so_that": "traffic flows unrestricted when policy enforcement is not needed or during troubleshooting",
+      "criteria": [
+        "Existing NetworkPolicy resource is deleted from the namespace (client.Delete with IgnoreNotFound)",
+        "NetworkPolicyReady condition is set to True with reason NetworkPolicyNotRequired",
+        "No error occurs when spec.networkPolicy is nil and no NetworkPolicy previously existed",
+        "Reconciler returns ctrl.Result{} immediately after setting the condition"
+      ]
+    },
+    {
+      "title": "Platform engineer adds custom egress for brownfield or external services",
+      "role": "platform engineer",
+      "want": "to add additionalEgress rules for targets not covered by auto-derivation (brownfield DB, OpenBao plugins, external APIs)",
+      "so_that": "Keystone pods can reach all required backends even in mixed managed/brownfield environments",
+      "criteria": [
+        "additionalEgress accepts raw networkingv1.NetworkPolicyEgressRule type for maximum flexibility",
+        "Additional rules are appended after auto-derived egress rules (DNS, MariaDB, Memcached)",
+        "Auto-derived rules remain present alongside additional rules",
+        "No auto-derived egress for database/cache when only brownfield fields are set (ClusterRef nil)"
+      ]
+    },
+    {
+      "title": "Operator observes NetworkPolicy status through conditions",
+      "role": "cluster operator",
+      "want": "to check the NetworkPolicyReady condition in the Keystone CR status",
+      "so_that": "I can verify network isolation state, monitor reconciliation health, and troubleshoot issues",
+      "criteria": [
+        "NetworkPolicyReady appears in status.conditions with correct Type, Status, Reason, and Message",
+        "ObservedGeneration matches the current Keystone CR generation",
+        "Ready aggregate condition includes NetworkPolicyReady in subConditionTypes evaluation",
+        "Reason differentiates active policy (NetworkPolicyReady) from disabled (NetworkPolicyNotRequired)"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The operator SHALL create a NetworkPolicy targeting Keystone API pods via selectorLabels when spec.networkPolicy is set",
+      "priority": "SHALL",
+      "rationale": "The NetworkPolicy resource is the core mechanism for enforcing Zero-Trust network isolation on Keystone API pods",
+      "scenarios": [
+        {
+          "name": "NetworkPolicy created with correct pod selector and metadata",
+          "when": "spec.networkPolicy is set with at least one ingress source",
+          "then": "a NetworkPolicy named '{keystoneName}-api' is created with PodSelector matching selectorLabels (app.kubernetes.io/name=keystone, app.kubernetes.io/instance={name})",
+          "and_then": [
+            "PolicyTypes include both Ingress and Egress",
+            "NetworkPolicy has controller ownerReference to the Keystone CR",
+            "commonLabels are set on ObjectMeta"
+          ]
+        },
+        {
+          "name": "NetworkPolicy updated when spec changes",
+          "when": "spec.networkPolicy is modified (e.g., ingress source added or egress rule changed)",
+          "then": "the existing NetworkPolicy is updated to reflect the new desired spec",
+          "and_then": [
+            "owner reference and labels are preserved/reconciled",
+            "update only issued when spec or metadata actually changed"
+          ]
+        },
+        {
+          "name": "NetworkPolicy re-created if deleted externally",
+          "when": "an owned NetworkPolicy is deleted out-of-band and reconciliation triggers via Owns watch",
+          "then": "a new NetworkPolicy is created matching the desired spec with SetControllerReference",
+          "and_then": [
+            "NetworkPolicyReady condition is set to True"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The operator SHALL auto-derive MariaDB TCP 3306 egress from spec.database.ClusterRef when set",
+      "priority": "SHALL",
+      "rationale": "Managed MariaDB uses an in-cluster Service discoverable from ClusterRef; auto-deriving egress eliminates manual configuration for the most common deployment mode",
+      "scenarios": [
+        {
+          "name": "MariaDB egress auto-derived from ClusterRef",
+          "when": "spec.database.ClusterRef is set (managed mode) and spec.networkPolicy is set",
+          "then": "an egress rule for TCP port 3306 is included in the NetworkPolicy egress list",
+          "and_then": [
+            "rule targets pods/namespace matching the MariaDB service"
+          ]
+        },
+        {
+          "name": "No MariaDB egress when brownfield only",
+          "when": "spec.database.Host is set with no ClusterRef (brownfield mode)",
+          "then": "no auto-derived MariaDB egress rule is added",
+          "and_then": [
+            "user must add explicit rules via additionalEgress for brownfield database access"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The operator SHALL auto-derive Memcached TCP 11211 egress from spec.cache.ClusterRef when set",
+      "priority": "SHALL",
+      "rationale": "Managed Memcached uses an in-cluster headless Service discoverable from ClusterRef; auto-deriving egress eliminates manual configuration for the common case",
+      "scenarios": [
+        {
+          "name": "Memcached egress auto-derived from ClusterRef",
+          "when": "spec.cache.ClusterRef is set (managed mode) and spec.networkPolicy is set",
+          "then": "an egress rule for TCP port 11211 is included in the NetworkPolicy egress list",
+          "and_then": [
+            "rule targets pods/namespace matching the Memcached service"
+          ]
+        },
+        {
+          "name": "No Memcached egress when brownfield only",
+          "when": "spec.cache.Servers is set with no ClusterRef (brownfield mode)",
+          "then": "no auto-derived Memcached egress rule is added",
+          "and_then": [
+            "user must add explicit rules via additionalEgress for brownfield cache access"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The operator SHALL always include DNS egress (UDP+TCP port 53 to kube-system) in the NetworkPolicy",
+      "priority": "SHALL",
+      "rationale": "DNS resolution is required for all pod communication; without it service discovery breaks and all egress rules targeting services by name would silently fail",
+      "scenarios": [
+        {
+          "name": "DNS egress present alongside auto-derived egress",
+          "when": "spec.networkPolicy is set and database/cache ClusterRef are both set",
+          "then": "the NetworkPolicy includes an egress rule for UDP port 53 and TCP port 53 targeting kube-system namespace",
+          "and_then": [
+            "DNS egress is the first egress rule in the list"
+          ]
+        },
+        {
+          "name": "DNS egress present even without auto-derived egress",
+          "when": "spec.networkPolicy is set but only brownfield database/cache (no ClusterRef set)",
+          "then": "the NetworkPolicy still includes the DNS egress rule",
+          "and_then": [
+            "DNS is the only auto-derived rule; user provides rest via additionalEgress"
+          ]
+        },
+        {
+          "name": "DNS rule includes both UDP and TCP protocols",
+          "when": "any NetworkPolicy is built",
+          "then": "the DNS egress rule has two ports: UDP 53 and TCP 53",
+          "and_then": [
+            "both protocols are required because DNS-over-TCP is used for responses exceeding 512 bytes"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The operator SHALL restrict ingress to TCP port 5000 from user-defined namespace/pod selectors specified in spec.networkPolicy.ingress",
+      "priority": "SHALL",
+      "rationale": "Keystone API listens on port 5000; restricting ingress to explicitly specified sources enforces Zero-Trust for the most security-sensitive OpenStack component",
+      "scenarios": [
+        {
+          "name": "Ingress from namespace selector only",
+          "when": "an ingress source specifies only namespaceSelector (podSelector is nil/empty)",
+          "then": "the NetworkPolicy allows ingress on TCP 5000 from any pod in namespaces matching the label selector",
+          "and_then": []
+        },
+        {
+          "name": "Ingress from namespace + pod selector",
+          "when": "an ingress source specifies both namespaceSelector and podSelector",
+          "then": "the NetworkPolicy allows ingress on TCP 5000 only from pods matching both selectors (AND logic)",
+          "and_then": []
+        },
+        {
+          "name": "Multiple ingress sources produce multiple From peers",
+          "when": "two or more ingress sources are specified",
+          "then": "all sources appear as separate From peers in a single NetworkPolicy ingress rule on TCP 5000",
+          "and_then": [
+            "traffic from any matching source is allowed (OR logic across peers)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The operator SHALL append user-defined additionalEgress rules to the NetworkPolicy after auto-derived rules",
+      "priority": "SHALL",
+      "rationale": "Brownfield targets, external services, and custom plugins (e.g., OpenBao) may need egress not auto-derivable from the CRD spec; additionalEgress provides escape-hatch flexibility",
+      "scenarios": [
+        {
+          "name": "Additional egress rules appended after auto-derived rules",
+          "when": "spec.networkPolicy.additionalEgress contains one or more networkingv1.NetworkPolicyEgressRule entries",
+          "then": "all additional egress rules are appended to the NetworkPolicy egress list after DNS and ClusterRef-derived rules",
+          "and_then": [
+            "auto-derived rules (DNS, MariaDB, Memcached) are not removed or reordered"
+          ]
+        },
+        {
+          "name": "No additional egress when field is empty or nil",
+          "when": "spec.networkPolicy.additionalEgress is nil or an empty slice",
+          "then": "only auto-derived egress rules appear in the NetworkPolicy",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The operator SHALL implement the three-path nil-check lifecycle for the spec.networkPolicy optional pointer field",
+      "priority": "SHALL",
+      "rationale": "Consistent lifecycle management (matching CC-0038 HPA pattern) ensures platform engineers can enable/disable network isolation without leftover resources or stale conditions",
+      "scenarios": [
+        {
+          "name": "Path 1: spec.networkPolicy nil + no existing NetworkPolicy",
+          "when": "spec.networkPolicy is nil and no NetworkPolicy named '{name}-api' exists in the namespace",
+          "then": "NetworkPolicyReady condition is set to True with reason NetworkPolicyNotRequired and message 'Network policy is not configured'",
+          "and_then": [
+            "delete is a no-op (client.IgnoreNotFound)",
+            "reconciler returns ctrl.Result{} with nil error"
+          ]
+        },
+        {
+          "name": "Path 2: spec.networkPolicy nil + existing NetworkPolicy found",
+          "when": "spec.networkPolicy is nil but a NetworkPolicy named '{name}-api' from a previous reconciliation exists",
+          "then": "the existing NetworkPolicy is deleted via client.Delete (IgnoreNotFound) and NetworkPolicyReady is set to True/NetworkPolicyNotRequired",
+          "and_then": [
+            "condition message is 'Network policy is not configured'"
+          ]
+        },
+        {
+          "name": "Path 3: spec.networkPolicy set",
+          "when": "spec.networkPolicy is set with valid ingress sources",
+          "then": "NetworkPolicy is created or updated via ensureNetworkPolicy with SetControllerReference, and NetworkPolicyReady is set to True/NetworkPolicyReady",
+          "and_then": [
+            "condition message is 'NetworkPolicy is configured'"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The CRD SHALL enforce CEL XValidation requiring at least one ingress source when spec.networkPolicy is set",
+      "priority": "SHALL",
+      "rationale": "A NetworkPolicy with no ingress sources blocks ALL traffic to Keystone API port 5000, causing an immediate service outage — CEL validation prevents this at admission time",
+      "scenarios": [
+        {
+          "name": "Validation passes with one or more ingress sources",
+          "when": "spec.networkPolicy is set with at least one item in the ingress array",
+          "then": "the CR passes CEL validation and is accepted by the API server",
+          "and_then": []
+        },
+        {
+          "name": "Validation rejects empty ingress array",
+          "when": "spec.networkPolicy is set but the ingress array is empty",
+          "then": "the API server rejects the CR with a validation error message 'at least one ingress source must be specified'",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The operator SHALL integrate reconcileNetworkPolicy into the controller with RBAC, Owns watch, condition aggregation, and correct reconcile chain position",
+      "priority": "SHALL",
+      "rationale": "Controller integration ensures NetworkPolicy reconciliation runs as part of the main loop with proper Kubernetes permissions and event-driven re-reconciliation on NetworkPolicy changes",
+      "scenarios": [
+        {
+          "name": "NetworkPolicyReady included in subConditionTypes aggregation",
+          "when": "setReadyCondition evaluates all sub-conditions for the aggregate Ready status",
+          "then": "NetworkPolicyReady is checked as part of the aggregation — Ready is False if NetworkPolicyReady is missing or not True",
+          "and_then": []
+        },
+        {
+          "name": "Owns watch triggers reconcile on NetworkPolicy changes",
+          "when": "a NetworkPolicy with controller ownerReference to a Keystone CR is modified or deleted externally",
+          "then": "the controller re-reconciles the owning Keystone CR",
+          "and_then": [
+            "NetworkPolicy is corrected to match desired state"
+          ]
+        },
+        {
+          "name": "RBAC marker grants networking.k8s.io permissions",
+          "when": "the controller attempts CRUD operations on NetworkPolicy resources",
+          "then": "the RBAC marker +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete is present",
+          "and_then": []
+        },
+        {
+          "name": "reconcileNetworkPolicy called after reconcileHPA and before reconcileBootstrap",
+          "when": "the main Reconcile loop runs all sub-reconcilers",
+          "then": "reconcileNetworkPolicy is called in the chain after reconcileHPA and before reconcileBootstrap",
+          "and_then": [
+            "early return on error or requeue, consistent with other sub-reconcilers"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "The operator SHALL propagate errors from NetworkPolicy ensure and delete operations with wrapped context",
+      "priority": "SHALL",
+      "rationale": "Error propagation ensures the reconciler reports failures correctly, requeues with backoff, and provides actionable error messages for debugging",
+      "scenarios": [
+        {
+          "name": "Ensure error wrapped and propagated",
+          "when": "creating or updating the NetworkPolicy fails (e.g., API server error, RBAC denial)",
+          "then": "the error is wrapped with fmt.Errorf('ensuring NetworkPolicy: %w', err) and returned from reconcileNetworkPolicy",
+          "and_then": [
+            "the main reconciler requeues with exponential backoff via updateStatus"
+          ]
+        },
+        {
+          "name": "Delete error wrapped and propagated (excluding NotFound)",
+          "when": "deleting the NetworkPolicy fails with an error other than NotFound",
+          "then": "the error is wrapped with fmt.Errorf('deleting NetworkPolicy: %w', err) and returned",
+          "and_then": [
+            "NotFound errors are silently ignored via client.IgnoreNotFound"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add NetworkPolicySpec and NetworkPolicyIngressSource types with CEL validation and optional pointer field to keystone_types.go (CC-0039, REQ-001, REQ-005, REQ-006, REQ-008)",
+      "description": "In operators/keystone/api/v1alpha1/keystone_types.go: (1) Add import for networkingv1 'k8s.io/api/networking/v1'. (2) Add NetworkPolicyIngressSource struct with NamespaceSelector map[string]string (required) and PodSelector map[string]string (optional). (3) Add NetworkPolicySpec struct with Ingress []NetworkPolicyIngressSource (required) and AdditionalEgress []networkingv1.NetworkPolicyEgressRule (optional). (4) Add CEL XValidation on NetworkPolicySpec: rule='size(self.ingress) > 0', message='at least one ingress source must be specified'. (5) Add optional pointer field NetworkPolicy *NetworkPolicySpec on KeystoneSpec (after Autoscaling, before ExtraConfig) with +optional marker and json tag 'networkPolicy,omitempty'. Follow existing pattern from Autoscaling *AutoscalingSpec at line 89. Run 'go vet ./...' from operators/keystone/ to verify compilation.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-001",
+        "REQ-005",
+        "REQ-006",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Implement reconcileNetworkPolicy sub-reconciler with buildNetworkPolicy and inline ensure/delete helpers in reconcile_networkpolicy.go (CC-0039, REQ-001 through REQ-007, REQ-010)",
+      "description": "Create operators/keystone/internal/controller/reconcile_networkpolicy.go. Implement: (1) reconcileNetworkPolicy(ctx, *Keystone) (ctrl.Result, error) — three-path lifecycle: if spec.networkPolicy nil → deleteNetworkPolicy + set NetworkPolicyReady=True/NetworkPolicyNotRequired; if set → buildNetworkPolicy + ensureNetworkPolicy + set NetworkPolicyReady=True/NetworkPolicyReady. (2) buildNetworkPolicy(*Keystone) *networkingv1.NetworkPolicy — constructs NetworkPolicy with: name=apiResourceName(), labels=commonLabels(), podSelector=selectorLabels(), policyTypes=[Ingress,Egress], ingress=[TCP 5000 from user sources], egress=[DNS always + MariaDB TCP 3306 if database.ClusterRef set + Memcached TCP 11211 if cache.ClusterRef set + additionalEgress]. (3) ensureNetworkPolicy(ctx, client, scheme, owner, *NetworkPolicy) error — get existing, create if not found (SetControllerReference), update if exists (snapshot-compare pattern from EnsureHPA). (4) deleteNetworkPolicy(ctx, client, namespace, name) error — client.Delete with IgnoreNotFound. Follow CC-0038 reconcile_hpa.go pattern exactly. Use SPDX license header. Feature comment: '// Feature: CC-0039'.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Unit tests for buildNetworkPolicy: pod selector, labels, policy types, ingress rules, auto-derived egress, DNS, additionalEgress, brownfield-only (CC-0039, REQ-001 through REQ-006)",
+      "description": "Create operators/keystone/internal/controller/reconcile_networkpolicy_test.go. Follow reconcile_hpa_test.go conventions: (1) npTestScheme() — clientgoscheme + networkingv1 + keystonev1alpha1. (2) npTestKeystone() — minimal fixture with managed database (ClusterRef) and managed cache (ClusterRef). (3) newNPTestReconciler(scheme, ...objs). Tests: TestBuildNetworkPolicy_PodSelector (selectorLabels match), TestBuildNetworkPolicy_Labels (commonLabels), TestBuildNetworkPolicy_PolicyTypes (Ingress+Egress), TestBuildNetworkPolicy_MariaDBEgressFromClusterRef (TCP 3306 present), TestBuildNetworkPolicy_NoMariaDBEgressWhenBrownfield (no ClusterRef → no rule), TestBuildNetworkPolicy_MemcachedEgressFromClusterRef (TCP 11211 present), TestBuildNetworkPolicy_NoMemcachedEgressWhenBrownfield, TestBuildNetworkPolicy_DNSEgressAlwaysPresent, TestBuildNetworkPolicy_DNSEgressIncludesUDPAndTCP, TestBuildNetworkPolicy_IngressFromNamespaceSelector, TestBuildNetworkPolicy_IngressWithPodSelector, TestBuildNetworkPolicy_MultipleIngressSources, TestBuildNetworkPolicy_AdditionalEgressAppended, TestBuildNetworkPolicy_NoAdditionalEgressWhenEmpty, TestBuildNetworkPolicy_BrownfieldOnlyHasDNSEgressOnly. Use NewGomegaWithT(t) assertions. SPDX header. Feature: CC-0039.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Unit tests for reconcileNetworkPolicy lifecycle: create, update, nil paths, ObservedGeneration, error propagation (CC-0039, REQ-007, REQ-010)",
+      "description": "In the same test file (reconcile_networkpolicy_test.go), add lifecycle tests following reconcile_hpa_test.go patterns: TestReconcileNetworkPolicy_PolicySet_CreatesNetworkPolicy (verify resource created, ownerRef set, condition=True/NetworkPolicyReady), TestReconcileNetworkPolicy_PolicySet_UpdatesExisting (create first, modify spec, re-reconcile, verify updated), TestReconcileNetworkPolicy_PolicyNil_NoExisting_SetsNotRequired (nil spec, no pre-existing NP, condition=True/NetworkPolicyNotRequired), TestReconcileNetworkPolicy_PolicyNil_ExistingDeleted (pre-create NP, nil spec, verify deleted and condition set), TestReconcileNetworkPolicy_ConditionObservedGeneration (test both paths with specific generation values), TestReconcileNetworkPolicy_EnsureError_Propagated (interceptor.Funcs on Create for *networkingv1.NetworkPolicy, verify error wrapping), TestReconcileNetworkPolicy_DeleteError_Propagated (interceptor.Funcs on Delete, verify error wrapping). Use fake.NewClientBuilder().WithInterceptorFuncs() for error injection.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-007",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Integrate reconcileNetworkPolicy into keystone_controller.go: condition type, RBAC marker, Owns watch, reconcile chain (CC-0039, REQ-009)",
+      "description": "In operators/keystone/internal/controller/keystone_controller.go: (1) Add 'NetworkPolicyReady' to subConditionTypes slice (after 'HPAReady', before 'BootstrapReady'). (2) Add import: networkingv1 'k8s.io/api/networking/v1'. (3) Add RBAC marker: '// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete' (after the autoscaling RBAC marker). (4) Add Owns(&networkingv1.NetworkPolicy{}) in SetupWithManager after Owns(&autoscalingv2.HorizontalPodAutoscaler{}). (5) Add reconcileNetworkPolicy call in the Reconcile method after reconcileHPA and before reconcileBootstrap: 'if result, err := r.reconcileNetworkPolicy(ctx, &keystone); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }'. Run 'go vet ./...' and 'go build ./...' from operators/keystone/ to verify.",
+      "level": 3,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-009"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_PodSelector",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "NetworkPolicy PodSelector should use selectorLabels: app.kubernetes.io/name=keystone, app.kubernetes.io/instance={name}",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_Labels",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "NetworkPolicy ObjectMeta should have commonLabels: app.kubernetes.io/name=keystone, instance={name}, managed-by=keystone-operator",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_PolicyTypes",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "NetworkPolicy should specify both Ingress and Egress in PolicyTypes",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_MariaDBEgressFromClusterRef",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "When database.ClusterRef is set, egress should include a TCP port 3306 rule",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_NoMariaDBEgressWhenBrownfield",
+      "story": "Platform engineer adds custom egress for brownfield or external services",
+      "expected": "When database.Host is set without ClusterRef, no auto-derived MariaDB egress rule should be present",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_MemcachedEgressFromClusterRef",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "When cache.ClusterRef is set, egress should include a TCP port 11211 rule",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_NoMemcachedEgressWhenBrownfield",
+      "story": "Platform engineer adds custom egress for brownfield or external services",
+      "expected": "When cache.Servers is set without ClusterRef, no auto-derived Memcached egress rule should be present",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_DNSEgressAlwaysPresent",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "DNS egress rule (UDP+TCP 53 targeting kube-system) should always be present regardless of ClusterRef configuration",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_DNSEgressIncludesUDPAndTCP",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "DNS egress rule should include both UDP port 53 and TCP port 53 (TCP needed for large DNS responses)",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_IngressFromNamespaceSelector",
+      "story": "Platform engineer configures ingress sources for Keystone API access",
+      "expected": "Ingress rule should allow TCP 5000 from pods in namespaces matching the namespaceSelector labels",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_IngressWithPodSelector",
+      "story": "Platform engineer configures ingress sources for Keystone API access",
+      "expected": "When podSelector is set, ingress peer should have both NamespaceSelector and PodSelector (AND logic)",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_MultipleIngressSources",
+      "story": "Platform engineer configures ingress sources for Keystone API access",
+      "expected": "Multiple ingress sources should produce multiple From peers in a single ingress rule (OR across peers)",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_AdditionalEgressAppended",
+      "story": "Platform engineer adds custom egress for brownfield or external services",
+      "expected": "additionalEgress rules should appear after auto-derived rules (DNS, MariaDB, Memcached) in the egress list",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_NoAdditionalEgressWhenEmpty",
+      "story": "Platform engineer adds custom egress for brownfield or external services",
+      "expected": "When additionalEgress is nil/empty, only auto-derived egress rules (DNS + ClusterRef-based) should be present",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestBuildNetworkPolicy_BrownfieldOnlyHasDNSEgressOnly",
+      "story": "Platform engineer adds custom egress for brownfield or external services",
+      "expected": "When both database and cache are brownfield-only (no ClusterRef), only DNS egress is auto-derived",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_PolicySet_CreatesNetworkPolicy",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "When spec.networkPolicy is set, reconciler creates a NetworkPolicy with owner reference and sets NetworkPolicyReady=True/NetworkPolicyReady",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_PolicySet_UpdatesExisting",
+      "story": "Platform engineer enables NetworkPolicy for Zero-Trust pod isolation",
+      "expected": "When spec.networkPolicy changes, reconciler updates the existing NetworkPolicy spec and metadata",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_PolicyNil_NoExisting_SetsNotRequired",
+      "story": "Platform engineer disables NetworkPolicy by removing the field",
+      "expected": "When spec.networkPolicy is nil and no existing NetworkPolicy, condition should be True/NetworkPolicyNotRequired",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_PolicyNil_ExistingDeleted",
+      "story": "Platform engineer disables NetworkPolicy by removing the field",
+      "expected": "When spec.networkPolicy is nil but NetworkPolicy exists, it should be deleted and condition set to NetworkPolicyNotRequired",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_ConditionObservedGeneration",
+      "story": "Operator observes NetworkPolicy status through conditions",
+      "expected": "NetworkPolicyReady condition should have ObservedGeneration matching the Keystone CR generation for both enabled and disabled paths",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_EnsureError_Propagated",
+      "story": "Operator observes NetworkPolicy status through conditions",
+      "expected": "When creating/updating NetworkPolicy fails (interceptor.Funcs), error should be wrapped with 'ensuring NetworkPolicy' context and propagated",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_networkpolicy_test.go",
+      "test_function": "TestReconcileNetworkPolicy_DeleteError_Propagated",
+      "story": "Platform engineer disables NetworkPolicy by removing the field",
+      "expected": "When deleting NetworkPolicy fails (non-NotFound, via interceptor.Funcs), error should be wrapped with 'deleting NetworkPolicy' context and propagated",
+      "requirement_id": "REQ-010"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All 10 requirements (REQ-001 through REQ-010) have corresponding passing unit tests covering happy path, error cases, and edge cases",
+    "NetworkPolicy auto-derives egress correctly: MariaDB TCP 3306 only when database.ClusterRef is set, Memcached TCP 11211 only when cache.ClusterRef is set, no auto-derived rules for brownfield-only configs",
+    "DNS egress (UDP+TCP 53 to kube-system) is always present in every generated NetworkPolicy regardless of other configuration",
+    "Three-path nil-check lifecycle matches CC-0038 HPA pattern exactly: nil+absent → NotRequired, nil+exists → delete+NotRequired, set → ensure+Ready",
+    "CEL XValidation marker on NetworkPolicySpec struct enforces size(self.ingress) > 0",
+    "Controller integration correct: NetworkPolicyReady in subConditionTypes, RBAC marker for networking.k8s.io/networkpolicies, Owns(&networkingv1.NetworkPolicy{}) watch, call positioned after reconcileHPA and before reconcileBootstrap",
+    "SetControllerReference called on both create and update paths in ensureNetworkPolicy for owner-based garbage collection",
+    "Error wrapping follows project convention: fmt.Errorf('verb context: %w', err) with descriptive action prefix",
+    "go vet and golangci-lint pass without errors on all modified/created files"
+  ],
+  "implementation_notes": "## Architecture\n\n```\n┌─────────────────────────────────────┐\n│ keystone_types.go                   │\n│  NetworkPolicySpec                  │\n│  ├─ Ingress []IngressSource         │\n│  └─ AdditionalEgress []EgressRule   │\n│  KeystoneSpec.NetworkPolicy *NPS    │\n└───────────────┬─────────────────────┘\n                │ imports\n                ▼\n┌─────────────────────────────────────┐\n│ reconcile_networkpolicy.go          │\n│  reconcileNetworkPolicy()           │\n│  ├─ nil path: delete + NotRequired  │\n│  └─ set path: build + ensure +Ready │\n│  buildNetworkPolicy()               │\n│  ├─ ingress: TCP 5000 + user srcs   │\n│  ├─ egress: DNS (always)            │\n│  ├─ egress: MariaDB (ClusterRef)    │\n│  ├─ egress: Memcached (ClusterRef)  │\n│  └─ egress: additionalEgress        │\n│  ensureNetworkPolicy()              │\n│  deleteNetworkPolicy()              │\n└───────────────┬─────────────────────┘\n                │ called by\n                ▼\n┌─────────────────────────────────────┐\n│ keystone_controller.go              │\n│  subConditionTypes += NP Ready      │\n│  RBAC: networking.k8s.io            │\n│  Owns(NetworkPolicy)                │\n│  Reconcile() chain:                 │\n│    ...→ reconcileHPA                │\n│    ...→ reconcileNetworkPolicy NEW  │\n│    ...→ reconcileBootstrap          │\n└─────────────────────────────────────┘\n```\n\n## Data Flow\n\n1. User sets `spec.networkPolicy` with ingress sources → Kubernetes API server validates CEL (size(self.ingress)>0) → CR accepted\n2. Controller receives reconcile event → calls reconcileNetworkPolicy\n3. reconcileNetworkPolicy checks `spec.networkPolicy` pointer:\n   - nil → deleteNetworkPolicy (no-op if absent) → set condition NotRequired → return\n   - set → buildNetworkPolicy reads spec.database.ClusterRef, spec.cache.ClusterRef, spec.networkPolicy.ingress/additionalEgress → constructs networkingv1.NetworkPolicy → ensureNetworkPolicy (create-or-update) → set condition Ready → return\n4. Owns watch on NetworkPolicy triggers re-reconcile if NP modified externally → drift corrected\n\n## Key Decisions\n\n1. **No common helper**: ensureNetworkPolicy/deleteNetworkPolicy are private functions in reconcile_networkpolicy.go (not in internal/common/deployment/) because NetworkPolicy construction is Keystone-specific due to auto-derived rules. Generalize when a second operator needs it.\n2. **Inline ensure follows EnsureHPA pattern**: Get existing → if NotFound: SetControllerReference + Create → if exists: snapshot before, reconcile metadata (ownerRefs/labels/annotations), set spec, compare, update if changed.\n3. **NetworkPolicy name**: Uses apiResourceName() = '{keystoneName}-api' (same as Deployment, HPA, PDB) for consistent naming.\n4. **Egress rule ordering**: DNS first (always), MariaDB second (conditional), Memcached third (conditional), additionalEgress last (user-defined).\n5. **No brownfield auto-derivation**: When ClusterRef is nil, no egress is auto-derived for that service. External host:port targets are too varied to safely auto-derive NetworkPolicy selectors.\n6. **OpenBao excluded**: Keystone pods never contact OpenBao directly — ESO controller handles PushSecret communication from a separate namespace/deployment.\n\n## Pitfalls\n\n1. **NetworkPolicy import alias**: Use `networkingv1 \"k8s.io/api/networking/v1\"` consistently (matches existing alias convention: appsv1, corev1, policyv1, autoscalingv2).\n2. **intstr.IntOrString for ports**: NetworkPolicy port values use `intstr.IntOrString`, not raw int32. Import `\"k8s.io/apimachinery/pkg/util/intstr\"`.\n3. **Protocol pointer**: NetworkPolicy ports require `*corev1.Protocol` (pointer), not `corev1.Protocol`. Use `protocolTCP := corev1.ProtocolTCP; port.Protocol = &protocolTCP`.\n4. **Test scheme registration**: Must add `networkingv1.AddToScheme(s)` (using `clientgoscheme.AddToScheme` covers core types but NOT networking/v1 — it must be registered explicitly).\n5. **DeepCopy generation**: After adding types to keystone_types.go, `controller-gen` must regenerate zz_generated.deepcopy.go. NetworkPolicySpec contains a slice of networkingv1.NetworkPolicyEgressRule which has its own DeepCopyInto — the generator handles this automatically.\n\n## Deferred Items\n\n1. **Integration test (envtest)**: Add NetworkPolicy verification to internal/controller/integration_test.go. Deferred because: feature scope explicitly says 'unit tests'. Revisit: next integration test sweep.\n2. **Common EnsureNetworkPolicy/DeleteNetworkPolicy**: Extract to internal/common/deployment/ when a second operator needs NetworkPolicy management. Deferred because: currently Keystone-specific due to auto-derived rules.\n3. **NetworkPolicy for CronJob/Job pods**: Fernet/credential rotation CronJobs and db_sync/bootstrap Jobs have different pod selectors (app.kubernetes.io/component differs). Deferred because: separate concern, not requested.\n4. **Brownfield auto-derivation**: Auto-deriving egress from spec.database.Host or spec.cache.Servers would require CIDR-based rules, which are fragile with DNS-resolved addresses. Deferred because: too varied to auto-derive safely; users configure via additionalEgress.\n5. **Webhook validation**: CEL XValidation markers suffice for the current validation needs. Deferred because: consistent with existing approach (no webhook-based validation for other optional fields).",
+  "status_history": {
+    "proposed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-01T13:41:15.118546"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-02T13:53:47.887276"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-02T14:05:45.727695"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "72a88a47-7faf-442d-9588-fc2458e6af5c",
+      "timestamp": "2026-04-02T14:05:45.727721",
+      "total_duration": 714.4185810089111,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 714.4185810089111,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
