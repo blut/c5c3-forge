@@ -1,0 +1,377 @@
+{
+  "feature_id": "CC-0044",
+  "title": "Replace hardcoded requeue intervals with constants",
+  "slug": "replace-hardcoded-requeue-intervals-with-constants",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #131: Replace hardcoded requeue intervals with named constants or CR configuration\n\n**Category**: improvement | **Scope**: Small\n\n**Description**: Requeue durations are scattered as magic numbers: 15s in reconcile_secrets.go, 30s in reconcile_database.go, 60s in reconcile_bootstrap.go. Extract these into named constants in a shared location, and optionally allow override via the CR spec for environments where different intervals are appropriate (e.g., faster in CI, slower in production).\n\n**Motivation**: Magic numbers make behavior opaque and tuning difficult. Different environments benefit from different requeue intervals — CI needs fast convergence while production benefits from gentler polling.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_secrets.go`\n- `operators/keystone/internal/controller/reconcile_database.go`\n- `operators/keystone/internal/controller/reconcile_bootstrap.go`\n\n**Acceptance Criteria**:\n- [ ] All requeue intervals are defined as named constants in a single location\n- [ ] Constants have descriptive names explaining the rationale for each interval\n- [ ] Optionally: intervals are overridable via CR spec\n- [ ] No behavioral change with default values\n\n---\nSource: https://github.com/C5C3/forge/issues/131",
+  "stories": [
+    {
+      "title": "Operator developer can identify requeue intervals by name",
+      "role": "operator developer",
+      "want": "all requeue intervals to be defined as named constants with descriptive names",
+      "so_that": "I can understand the rationale for each interval without reading scattered code across multiple files",
+      "criteria": [
+        "All requeue intervals (10s, 15s, 30s, 60s) are defined as named constants in a single file within the controller package",
+        "Each constant has a descriptive name that conveys why that specific duration was chosen (e.g., RequeueSecretsPolling, RequeueDatabaseWait)",
+        "No hardcoded time.Second multiplications remain in reconcile_*.go production code",
+        "Constants are package-level (unexported is acceptable since they are internal)"
+      ]
+    },
+    {
+      "title": "Operator developer can tune requeue intervals in one place",
+      "role": "operator developer",
+      "want": "to change a requeue interval by editing a single constant definition",
+      "so_that": "tuning does not require hunting through multiple files and risking inconsistent changes",
+      "criteria": [
+        "Changing a constant value in the constants file is the only edit needed to change all usages of that interval",
+        "Test assertions reference the same constants so they remain correct after tuning",
+        "The integration_test.go eventuallyLongTimeout constant references the database requeue constant rather than a hardcoded value"
+      ]
+    },
+    {
+      "title": "No behavioral change with default values",
+      "role": "platform operator",
+      "want": "the operator to behave identically after the refactoring",
+      "so_that": "this change is a safe, non-breaking improvement",
+      "criteria": [
+        "All existing unit tests pass without modification to their assertions (only the interval references change)",
+        "All existing integration tests pass without behavioral changes",
+        "The reconcile loop requeues at exactly the same intervals as before: 15s for secrets, 30s for database, 60s for bootstrap, 10s for deployment"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "All requeue intervals in reconcile_secrets.go, reconcile_database.go, reconcile_bootstrap.go, and reconcile_deployment.go SHALL be replaced with named constants defined in a single file",
+      "priority": "SHALL",
+      "rationale": "Magic numbers scattered across 4 files make behavior opaque. Centralizing them in one file makes tuning and auditing straightforward.",
+      "scenarios": [
+        {
+          "name": "Secrets requeue uses named constant",
+          "when": "reconcileSecrets returns a requeue result because a secret is not ready",
+          "then": "the RequeueAfter value equals the RequeueSecretPolling constant (15s)",
+          "and_then": [
+            "the literal '15 * time.Second' does not appear in reconcile_secrets.go"
+          ]
+        },
+        {
+          "name": "Database requeue uses named constant",
+          "when": "reconcileDatabase returns a requeue result because a MariaDB CR or db_sync job is not ready",
+          "then": "the RequeueAfter value equals the RequeueDatabaseWait constant (30s)",
+          "and_then": [
+            "the literal '30 * time.Second' does not appear in reconcile_database.go"
+          ]
+        },
+        {
+          "name": "Bootstrap requeue uses named constant",
+          "when": "reconcileBootstrap returns a requeue result because the bootstrap job is in progress",
+          "then": "the RequeueAfter value equals the RequeueBootstrapWait constant (60s)",
+          "and_then": [
+            "the literal '60 * time.Second' does not appear in reconcile_bootstrap.go"
+          ]
+        },
+        {
+          "name": "Deployment requeue uses named constant",
+          "when": "reconcileDeployment returns a requeue result because the deployment is not ready",
+          "then": "the RequeueAfter value equals the RequeueDeploymentPolling constant (10s)",
+          "and_then": [
+            "the literal '10 * time.Second' does not appear in reconcile_deployment.go"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "Named constants SHALL have descriptive names that explain the semantic purpose of each interval, and SHALL preserve the existing default values exactly",
+      "priority": "SHALL",
+      "rationale": "Descriptive names make the code self-documenting. Preserving exact values ensures zero behavioral change.",
+      "scenarios": [
+        {
+          "name": "Constants convey semantic meaning",
+          "when": "a developer reads the constants file",
+          "then": "each constant name indicates which sub-reconciler uses it and the nature of the wait (e.g., polling for external resource readiness vs waiting for job completion)",
+          "and_then": []
+        },
+        {
+          "name": "Default values match original hardcoded values",
+          "when": "the constants are defined",
+          "then": "RequeueSecretPolling == 15s, RequeueDatabaseWait == 30s, RequeueBootstrapWait == 60s, RequeueDeploymentPolling == 10s",
+          "and_then": [
+            "all existing tests pass without changing expected values"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "Test assertions SHALL reference the named constants instead of hardcoded duration values",
+      "priority": "SHALL",
+      "rationale": "If tests use hardcoded values, changing a constant would cause test failures rather than automatically adapting. Tests must reference the same constants so they remain correct after tuning.",
+      "scenarios": [
+        {
+          "name": "Unit test assertions use constants",
+          "when": "a unit test asserts on a RequeueAfter value",
+          "then": "the expected value is the named constant, not a hardcoded duration literal",
+          "and_then": [
+            "no hardcoded '15 * time.Second', '30 * time.Second', '60 * time.Second', or '10 * time.Second' assertions remain in reconcile_*_test.go files"
+          ]
+        },
+        {
+          "name": "Integration test timeouts reference constants",
+          "when": "the integration test defines eventuallyLongTimeout",
+          "then": "it is derived from RequeueDatabaseWait (e.g., 2*RequeueDatabaseWait) rather than a standalone hardcoded 60s",
+          "and_then": [
+            "if RequeueDatabaseWait is tuned, the integration test timeout adjusts accordingly"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The constants SHALL be defined in a dedicated file within the controller package and SHALL pass golangci-lint",
+      "priority": "SHALL",
+      "rationale": "A dedicated file keeps the constants discoverable and grouped. The code must pass the project linting configuration.",
+      "scenarios": [
+        {
+          "name": "Constants in dedicated file",
+          "when": "a developer looks for requeue interval definitions",
+          "then": "all requeue duration constants are defined in a single file (e.g., requeue_intervals.go) within the controller package",
+          "and_then": [
+            "the file contains only the constants and their documentation, not reconciliation logic"
+          ]
+        },
+        {
+          "name": "Lint passes",
+          "when": "golangci-lint is run on the controller package",
+          "then": "no new lint errors or warnings are introduced",
+          "and_then": []
+        },
+        {
+          "name": "go vet passes",
+          "when": "go vet is run on the controller package",
+          "then": "no new vet issues are introduced",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Define named requeue interval constants in a dedicated file (CC-0044, REQ-001, REQ-002, REQ-004)",
+      "description": "Create operators/keystone/internal/controller/requeue_intervals.go with package-level constants: RequeueSecretPolling (15s — short interval for polling ESO-managed secret readiness), RequeueDatabaseWait (30s — moderate interval for MariaDB CR readiness and db_sync job completion), RequeueBootstrapWait (60s — longer interval for bootstrap job completion, which is a one-time heavyweight operation), RequeueDeploymentPolling (10s — shortest interval for deployment readiness, which should converge quickly). Include SPDX license header matching project convention. Each constant gets a doc comment explaining its purpose and rationale.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Replace hardcoded intervals in reconcile_secrets.go and update test assertions (CC-0044, REQ-001, REQ-003)",
+      "description": "In operators/keystone/internal/controller/reconcile_secrets.go: Replace all 4 instances of '15 * time.Second' (lines 42, 60, 76, 92) with RequeueSecretPolling. Remove 'time' from the import list since it will no longer be used. In operators/keystone/internal/controller/reconcile_secrets_test.go: Replace all 5 instances of '15 * time.Second' in test assertions (lines 160, 197, 327, 368, 401) with RequeueSecretPolling. Verify the 'time' import can be removed from the test file if no other time references remain.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Replace hardcoded intervals in reconcile_database.go and update test assertions (CC-0044, REQ-001, REQ-003)",
+      "description": "In operators/keystone/internal/controller/reconcile_database.go: Replace all 3 instances of '30 * time.Second' (lines 49, 65, 90) with RequeueDatabaseWait. Remove 'time' from the import list since it will no longer be used. In operators/keystone/internal/controller/reconcile_database_test.go: Replace all 5 instances of '30 * time.Second' in test assertions (lines 208, 229, 277, 312, 368) with RequeueDatabaseWait. Verify the 'time' import can be removed from the test file if no other time references remain.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Replace hardcoded intervals in reconcile_bootstrap.go and update test assertions (CC-0044, REQ-001, REQ-003)",
+      "description": "In operators/keystone/internal/controller/reconcile_bootstrap.go: Replace the 1 instance of '60 * time.Second' (line 51) with RequeueBootstrapWait. Remove 'time' from the import list since it will no longer be used. In operators/keystone/internal/controller/reconcile_bootstrap_test.go: Replace all 3 instances of '60 * time.Second' in test assertions (lines 133, 216, 255) with RequeueBootstrapWait. Verify the 'time' import can be removed from the test file if no other time references remain.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Replace hardcoded intervals in reconcile_deployment.go and update test assertions (CC-0044, REQ-001, REQ-003)",
+      "description": "In operators/keystone/internal/controller/reconcile_deployment.go: Replace the 1 instance of '10 * time.Second' (line 99) with RequeueDeploymentPolling. Check if 'time' can be removed from the import list (it may still be used elsewhere in this file). In operators/keystone/internal/controller/reconcile_deployment_test.go: Replace all 5 instances of '10 * time.Second' in test assertions (lines 131, 155, 328, 520, 593) with RequeueDeploymentPolling. Verify the 'time' import can be removed from the test file if no other time references remain.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.6",
+      "title": "Update integration test timeout to derive from named constant (CC-0044, REQ-003)",
+      "description": "In operators/keystone/internal/controller/integration_test.go: Update the eventuallyLongTimeout constant (currently 60 * time.Second) to be derived from RequeueDatabaseWait (e.g., 2 * RequeueDatabaseWait) so that if the database requeue interval is tuned, the integration test timeout adjusts accordingly. The comment on eventuallyLongTimeout already explains it depends on the controller's 30s RequeueAfter delay — update the comment to reference the constant name instead. Leave eventuallyTimeout and pollInterval unchanged as they are independent of requeue intervals.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Verify all tests pass and no hardcoded requeue intervals remain (CC-0044, REQ-001, REQ-002, REQ-003, REQ-004)",
+      "description": "Run 'go test ./operators/keystone/internal/controller/...' to verify all unit tests pass. Run 'golangci-lint run ./operators/keystone/...' to verify lint passes. Run 'go vet ./operators/keystone/...' to verify no vet issues. Grep the codebase to confirm no hardcoded requeue interval literals (10/15/30/60 * time.Second) remain in reconcile_*.go or reconcile_*_test.go files (except the constant definitions themselves).",
+      "level": 2,
+      "estimate_minutes": 10,
+      "status": "todo",
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_DBCredentialsNotReady",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueSecretPolling constant (15s) when DB ExternalSecret is not ready",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_AdminCredentialsNotReady",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueSecretPolling constant (15s) when admin ExternalSecret is not ready",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_DatabaseNotReady_Requeues",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueDatabaseWait constant (30s) when MariaDB Database CR is not ready",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_DBSyncRunning_Requeues",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueDatabaseWait constant (30s) when db_sync job is in progress",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobRunning",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueBootstrapWait constant (60s) when bootstrap job is in progress",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_deployment_test.go",
+      "test_function": "TestReconcileDeployment_NotReady_Requeues",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueDeploymentPolling constant (10s) when deployment is not ready",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_BothReady",
+      "story": "No behavioral change with default values",
+      "expected": "[unit] When both secrets are ready, result is zero-value (no requeue) — unchanged behavior",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestReconcileDatabase_Managed_AllReady_DatabaseSynced",
+      "story": "No behavioral change with default values",
+      "expected": "[unit] When database is fully synced, result is zero-value (no requeue) — unchanged behavior",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "eventuallyLongTimeout constant definition",
+      "story": "Operator developer can tune requeue intervals in one place",
+      "expected": "[integration] eventuallyLongTimeout is derived from RequeueDatabaseWait (2*RequeueDatabaseWait) rather than a standalone hardcoded value",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_secrets_test.go",
+      "test_function": "TestReconcileSecrets_DBSecretMissingKeys",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueSecretPolling constant (15s) when DB secret has missing keys",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_JobCreated",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueBootstrapWait constant (60s) when bootstrap job is first created",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_bootstrap_test.go",
+      "test_function": "TestReconcileBootstrap_StaleJobDetection",
+      "story": "Operator developer can identify requeue intervals by name",
+      "expected": "[unit] RequeueAfter should equal RequeueBootstrapWait constant (60s) when a stale bootstrap job is recreated",
+      "requirement_id": "REQ-001"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All 9 hardcoded requeue intervals in production code (4 in secrets, 3 in database, 1 in bootstrap, 1 in deployment) are replaced with named constants",
+    "All 18 hardcoded requeue intervals in test assertions (5 in secrets_test, 5 in database_test, 3 in bootstrap_test, 5 in deployment_test) are replaced with the same named constants",
+    "Constants file has SPDX license header matching project convention and descriptive doc comments for each constant",
+    "All existing unit tests pass with zero assertion changes (only reference changes from literals to constants)",
+    "golangci-lint and go vet pass without new issues on the controller package",
+    "No unused imports remain (time package removed from files where it is no longer needed)",
+    "integration_test.go eventuallyLongTimeout derives from RequeueDatabaseWait rather than a standalone 60s literal"
+  ],
+  "implementation_notes": "This is a pure refactoring task — no behavioral changes, no API changes, no CRD changes.\n\n**Architecture:** All constants are defined in a single new file `requeue_intervals.go` within the `controller` package (`operators/keystone/internal/controller/`). Since this is an internal package, the constants can be unexported (package-scoped). However, using exported names (e.g., `RequeueSecretPolling`) is fine and follows the pattern used for `subConditionTypes` in `keystone_controller.go`.\n\n**Constant naming convention:** Use the pattern `Requeue{SubReconciler}{Semantic}` where:\n- SubReconciler = Secret, Database, Bootstrap, Deployment\n- Semantic = Polling (for readiness checks on external resources) or Wait (for completion of long-running operations)\n\n**Interval values and rationale:**\n- 10s (Deployment) — Deployment readiness converges quickly; frequent polling appropriate\n- 15s (Secrets) — ESO secret sync is fast but depends on external vault; moderate polling\n- 30s (Database) — MariaDB CR readiness and db_sync jobs are moderately slow; balance between responsiveness and API load\n- 60s (Bootstrap) — Bootstrap is a one-time heavyweight operation; gentle polling sufficient\n\n**Import cleanup:** After replacing `time.Second` literals, check each modified file to see if the `\"time\"` import can be removed. Files that still reference `time` for other purposes (e.g., `time.Now()`) should keep the import.\n\n**Integration test coupling:** The `eventuallyLongTimeout` in `integration_test.go` is explicitly documented as depending on the 30s RequeueAfter delay. Changing it to `2 * RequeueDatabaseWait` makes this coupling explicit in code rather than just in comments.\n\n**Files affected:**\n- NEW: `operators/keystone/internal/controller/requeue_intervals.go` (constants definition)\n- MODIFY: `operators/keystone/internal/controller/reconcile_secrets.go` (4 replacements)\n- MODIFY: `operators/keystone/internal/controller/reconcile_database.go` (3 replacements)\n- MODIFY: `operators/keystone/internal/controller/reconcile_bootstrap.go` (1 replacement)\n- MODIFY: `operators/keystone/internal/controller/reconcile_deployment.go` (1 replacement)\n- MODIFY: `operators/keystone/internal/controller/reconcile_secrets_test.go` (5 replacements)\n- MODIFY: `operators/keystone/internal/controller/reconcile_database_test.go` (5 replacements)\n- MODIFY: `operators/keystone/internal/controller/reconcile_bootstrap_test.go` (3 replacements)\n- MODIFY: `operators/keystone/internal/controller/reconcile_deployment_test.go` (5 replacements)\n- MODIFY: `operators/keystone/internal/controller/integration_test.go` (1 timeout derivation)",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-07T19:49:23.089148"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-07T19:49:23.319810"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-07T19:53:08.514967"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "fe748b8c-c074-4a40-a198-50b7a83d6136",
+      "timestamp": "2026-04-07T19:53:08.515007",
+      "total_duration": 222.35081148147583,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 222.35081148147583,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
