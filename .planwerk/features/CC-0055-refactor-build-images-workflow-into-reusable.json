@@ -1,0 +1,845 @@
+{
+  "feature_id": "CC-0055",
+  "title": "Refactor build-images workflow into reusable components",
+  "slug": "refactor-build-images-workflow-into-reusable",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #166: Refactor build-images workflow: extract repeated steps into reusable scripts and composite actions\n\n**Category**: improvement | **Scope**: Medium\n\n**Description**: `.github/workflows/build-images.yaml` has grown to ~1295 lines and contains large duplicated step sequences across jobs. This makes the workflow hard to read, test locally, and maintain as new services and releases are added. The repeated blocks should be extracted into standalone shell scripts under `hack/` and composite actions under `.github/actions/`, following the pattern established by CC-0050 for `ci.yaml`.\n\nKey areas of duplication and complexity:\n\n1. **Supply chain security sequence** — The SBOM generation → Grype vulnerability scan → SARIF upload → attestation → build provenance → cosign signing pipeline is copy-pasted for python-base (lines 265–330), venv-builder (lines 355–418), tempest (lines 649–693), and service images (lines 1032–1077). That is ~65 lines repeated 4 times (~260 lines). Extract into a composite action (e.g. `.github/actions/supply-chain-attest`) parameterised by image name and digest.\n\n2. **Docker registry setup** — The `docker/login-action` + `docker/setup-buildx-action` + `sigstore/cosign-installer` block is repeated in build-base-images, merge-base-images, build-tempest, merge-tempest-image, build-service-images, merge-service-images, verify-base-images, test-service-images, and verify-service-images (~9 jobs). Extract into a composite action (e.g. `.github/actions/setup-docker-registry`).\n\n3. **Digest export + artifact upload** — The pattern of `mkdir -p /tmp/digests && touch \"/tmp/digests/${digest#sha256:}\"` followed by `actions/upload-artifact` is repeated for python-base, venv-builder, tempest, and service images. Extract into a composite action or script.\n\n4. **Manifest merge logic** — The `docker buildx imagetools create` + `imagetools inspect` pattern is similar across merge-base-images (python-base, venv-builder), merge-tempest-image, and merge-service-images. Extract into `hack/ci-merge-manifest.sh` with env var interface.\n\n5. **Source ref resolution + upstream checkout + patches + constraint overrides** — Duplicated between `build-service-images` (lines 788–819) and `test-service-images` (lines 1130–1163) with explicit `NOTE: This step MUST stay in sync` comments acknowledging the drift risk. Extract into a composite action (e.g. `.github/actions/checkout-service-source`).\n\n6. **Normalize image owner** — The one-liner `echo \"owner=${GITHUB_REPOSITORY_OWNER,,}\" >> \"$GITHUB_OUTPUT\"` is repeated in 6+ jobs. Absorb into a composite action or set as a workflow-level env.\n\n7. **test-service-images inline docker run** — The test execution step (lines 1204–1252) is a ~50-line inline script with volume mounts, environment variables, and a nested `bash -c` block. Extract into `hack/ci-run-unit-tests.sh` for local testing and shellcheck coverage.\n\n**Motivation**: As more OpenStack services are added (glance, nova, neutron, etc.), each new service multiplies the copy-paste burden in the supply chain and manifest merge sections. The `NOTE: This step MUST stay in sync` comments on lines 1129, 1151, and 1159 are a maintenance anti-pattern — a single composite action eliminates the synchronisation problem. Standalone scripts can be tested locally with shellcheck and run outside of CI for debugging. The workflow file should be a declarative orchestration layer, not a container for business logic.\n\n**Affected Areas**:\n- `.github/workflows/build-images.yaml`\n- `.github/actions/` (new composite actions)\n- `hack/` (new scripts)\n- `tests/ci/` (script validation tests)\n\n**Acceptance Criteria**:\n- [ ] Supply chain security sequence (SBOM, Grype, SARIF, attestation, provenance, cosign) is a single composite action called for each image\n- [ ] Docker registry setup (login, buildx, cosign) is a composite action shared across jobs\n- [ ] Digest export + artifact upload is consolidated\n- [ ] Manifest merge logic is extracted into a reusable script with env var interface\n- [ ] Service source checkout (source-ref, upstream clone, patches, constraint overrides) is a composite action eliminating \"MUST stay in sync\" duplication\n- [ ] Unit test execution block is extracted into a standalone script\n- [ ] `build-images.yaml` is reduced to < 600 lines (orchestration only, no multi-line inline scripts beyond ~5 lines)\n- [ ] All extracted scripts pass shellcheck\n- [ ] No functional change to workflow behavior — all existing jobs produce identical results\n- [ ] Extracted scripts are usable for local debugging\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/166",
+  "stories": [
+    {
+      "title": "CI maintainer uses supply-chain-attest composite action for all image types",
+      "role": "CI maintainer",
+      "want": "the SBOM generation, Grype vulnerability scan, SARIF upload, attestation, build provenance, and cosign signing pipeline to be a single parameterised composite action",
+      "so_that": "adding a new image type requires one action call instead of copy-pasting ~65 lines, and security pipeline changes propagate to all images automatically",
+      "criteria": [
+        "Composite action `.github/actions/supply-chain-attest/action.yaml` exists with inputs: image-name, image-digest, sbom-output-file, grype-category, skip-sbom-attest (for PR-only scan mode)",
+        "python-base, venv-builder, tempest, and service images all call the same composite action",
+        "Supply chain steps are removed from inline workflow YAML and replaced by `uses: ./.github/actions/supply-chain-attest`",
+        "PR-only image scan mode (no SBOM, no attestation, no signing) works correctly via the skip-sbom-attest input"
+      ]
+    },
+    {
+      "title": "CI maintainer uses setup-docker-registry composite action across all jobs",
+      "role": "CI maintainer",
+      "want": "the docker/login-action + docker/setup-buildx-action + sigstore/cosign-installer block to be a single composite action",
+      "so_that": "updating action versions or adding a new registry only requires changing one file instead of ~9 jobs",
+      "criteria": [
+        "Composite action `.github/actions/setup-docker-registry/action.yaml` exists with inputs: registry, install-cosign (boolean, default true)",
+        "All 9 jobs that currently inline docker login + buildx + cosign now call the composite action",
+        "Jobs that do not need cosign (verify-base-images, test-service-images) pass `install-cosign: false`",
+        "Action pins (SHA + version comment) match the current versions in the workflow"
+      ]
+    },
+    {
+      "title": "CI maintainer uses checkout-service-source composite action eliminating sync comments",
+      "role": "CI maintainer",
+      "want": "the source-ref resolution, upstream checkout, patch application, and constraint override steps to be a single composite action",
+      "so_that": "the 'NOTE: This step MUST stay in sync' comments are eliminated and build-service-images and test-service-images always use identical checkout logic",
+      "criteria": [
+        "Composite action `.github/actions/checkout-service-source/action.yaml` exists with inputs: service, release",
+        "Both build-service-images and test-service-images call the same composite action",
+        "All three 'MUST stay in sync' comments (lines 1129, 1151, 1159) are removed",
+        "Source ref resolution, upstream checkout, patch application, and constraint overrides all execute correctly"
+      ]
+    },
+    {
+      "title": "CI maintainer uses ci-merge-manifest.sh for all manifest merge operations",
+      "role": "CI maintainer",
+      "want": "the docker buildx imagetools create + imagetools inspect pattern to be a reusable script with env var interface",
+      "so_that": "manifest merge logic is tested via shellcheck, runnable locally, and changes apply to all image types",
+      "criteria": [
+        "Script `hack/ci-merge-manifest.sh` exists with env var interface (IMAGE, DIGEST_DIR, TAGS, SHA_TAG)",
+        "Script follows CC-0050 conventions: shebang, SPDX header, feature ID, required/optional env docs, set -euo pipefail",
+        "merge-base-images (python-base + venv-builder), merge-tempest-image, and merge-service-images all call the script",
+        "Script outputs merged manifest digest to GITHUB_OUTPUT",
+        "Script passes shellcheck --severity=warning"
+      ]
+    },
+    {
+      "title": "CI maintainer uses ci-run-unit-tests.sh for service test execution",
+      "role": "CI maintainer",
+      "want": "the ~50-line inline docker run block in test-service-images to be an extracted shell script",
+      "so_that": "the test execution logic is shellcheck-clean, locally runnable for debugging, and not buried in workflow YAML",
+      "criteria": [
+        "Script `hack/ci-run-unit-tests.sh` exists with env var interface (SERVICE_NAME, SERVICE_VERSION, INSTALL_SPEC, VENV_BUILDER_IMAGE, etc.)",
+        "Script follows CC-0050 conventions including SPDX header and set -euo pipefail",
+        "test-service-images job calls the script instead of inline docker run",
+        "Script passes shellcheck --severity=warning",
+        "Script can be run locally with appropriate env vars for debugging"
+      ]
+    },
+    {
+      "title": "CI maintainer sees normalize-image-owner handled as workflow-level env",
+      "role": "CI maintainer",
+      "want": "the repeated one-liner `echo owner=${GITHUB_REPOSITORY_OWNER,,}` to appear only once",
+      "so_that": "adding a new job does not require remembering to add the normalize step",
+      "criteria": [
+        "The normalize-image-owner one-liner is removed from all 5 jobs that currently inline it",
+        "Image owner is resolved once and available to all jobs that need it (either via workflow env or a dedicated step in a composite action)",
+        "All image references using the owner value continue to work correctly"
+      ]
+    },
+    {
+      "title": "CI maintainer uses digest-export composite action for all images",
+      "role": "CI maintainer",
+      "want": "the mkdir + touch + upload-artifact pattern for digest export to be consolidated",
+      "so_that": "the digest export pattern is consistent and adding a new image type does not require copy-pasting the pattern",
+      "criteria": [
+        "Composite action `.github/actions/export-digest/action.yaml` exists with inputs: digest, artifact-name, digest-dir (default /tmp/digests)",
+        "python-base, venv-builder, tempest, and service images all call the same composite action",
+        "Inline mkdir/touch/upload-artifact steps are removed from the workflow"
+      ]
+    },
+    {
+      "title": "CI maintainer confirms all extracted scripts pass verification tests",
+      "role": "CI maintainer",
+      "want": "all new hack/ci-*.sh scripts to be automatically validated by the existing tests/ci/verify_ci_scripts.sh test suite",
+      "so_that": "script quality standards (set -euo pipefail, shellcheck, SPDX headers, error annotations) are enforced",
+      "criteria": [
+        "All new scripts (ci-merge-manifest.sh, ci-run-unit-tests.sh) pass tests/ci/verify_ci_scripts.sh",
+        "All new scripts pass shellcheck --severity=warning individually",
+        "verify_ci_scripts.sh count of CI scripts increases to reflect new additions",
+        "No new test infrastructure changes needed — existing test framework picks up new scripts automatically"
+      ]
+    },
+    {
+      "title": "CI maintainer confirms no functional change to workflow behavior",
+      "role": "CI maintainer",
+      "want": "all existing jobs to produce identical results after the refactoring",
+      "so_that": "the refactoring is purely structural with no behavioral regression",
+      "criteria": [
+        "build-images.yaml is reduced to < 600 lines",
+        "All jobs maintain their existing `needs`, `permissions`, `strategy`, and `timeout-minutes` settings",
+        "All existing outputs (python-base-image, venv-builder-image, etc.) are preserved",
+        "Concurrency and trigger configuration remain unchanged",
+        "PR vs push behavior (load vs push-by-digest, SBOM skip on PR) is preserved"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The system SHALL extract the supply chain security sequence (SBOM, Grype, SARIF, attestation, provenance, cosign) into a composite action `.github/actions/supply-chain-attest/action.yaml`",
+      "priority": "SHALL",
+      "rationale": "This ~65-line block is repeated 4 times (~260 lines total). A single composite action eliminates drift and reduces maintenance burden.",
+      "scenarios": [
+        {
+          "name": "Full supply chain on push (non-PR)",
+          "when": "the composite action is called with skip-sbom-attest=false for a merged image",
+          "then": "SBOM is generated, Grype scans the SBOM, SARIF is uploaded, SBOM is attested, build provenance is attested, and the image is cosign-signed",
+          "and_then": [
+            "all 6 supply chain steps execute in order"
+          ]
+        },
+        {
+          "name": "Image-only scan on PR",
+          "when": "the composite action is called with skip-sbom-attest=true for a PR image scan",
+          "then": "Grype scans the image directly (not via SBOM), SARIF is uploaded, but SBOM generation, attestation, provenance, and cosign signing are skipped",
+          "and_then": [
+            "only 2 of 6 steps execute"
+          ]
+        },
+        {
+          "name": "SARIF upload on scan failure",
+          "when": "the Grype scan step outputs a SARIF file but finds high-severity vulnerabilities",
+          "then": "the SARIF is still uploaded to the GitHub Security tab (fail-build: false is preserved)",
+          "and_then": [
+            "the workflow does not fail due to vulnerabilities"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The system SHALL extract Docker registry setup (login, buildx, cosign) into a composite action `.github/actions/setup-docker-registry/action.yaml`",
+      "priority": "SHALL",
+      "rationale": "The 3-step block is repeated across ~9 jobs. A single action ensures version consistency and simplifies onboarding new jobs.",
+      "scenarios": [
+        {
+          "name": "Full setup with cosign",
+          "when": "the composite action is called with install-cosign=true (default)",
+          "then": "docker/setup-buildx-action, docker/login-action, and sigstore/cosign-installer all execute",
+          "and_then": [
+            "cosign is available on PATH for subsequent steps"
+          ]
+        },
+        {
+          "name": "Setup without cosign",
+          "when": "the composite action is called with install-cosign=false",
+          "then": "docker/setup-buildx-action and docker/login-action execute but cosign is not installed",
+          "and_then": [
+            "jobs that only pull/verify images skip unnecessary cosign installation"
+          ]
+        },
+        {
+          "name": "GHCR authentication succeeds",
+          "when": "the composite action is called with valid registry credentials",
+          "then": "docker login to ghcr.io succeeds and subsequent push/pull operations are authenticated",
+          "and_then": [
+            "the GITHUB_TOKEN passed by the caller is used for authentication"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The system SHALL extract the checkout-service-source sequence into a composite action `.github/actions/checkout-service-source/action.yaml`",
+      "priority": "SHALL",
+      "rationale": "The source-ref resolution + upstream checkout + patches + constraint overrides is duplicated between build-service-images and test-service-images with explicit 'MUST stay in sync' comments — a maintenance anti-pattern.",
+      "scenarios": [
+        {
+          "name": "Source ref resolved and checkout succeeds",
+          "when": "the composite action is called with service=keystone and release=2025.2",
+          "then": "the source ref is resolved from releases/2025.2/source-refs.yaml, the upstream repo is cloned at that ref into src/keystone, and constraint overrides are applied",
+          "and_then": [
+            "patches are applied if they exist in patches/keystone/2025.2/"
+          ]
+        },
+        {
+          "name": "Missing source ref fails with clear error",
+          "when": "the composite action is called with a service not in source-refs.yaml",
+          "then": "the action fails with an ::error:: annotation including the service name and release",
+          "and_then": [
+            "no partial checkout is left behind"
+          ]
+        },
+        {
+          "name": "No patches exist for service/release",
+          "when": "the composite action is called for a service/release with no patches directory",
+          "then": "the patch application step is skipped via the hashFiles condition",
+          "and_then": [
+            "the checkout completes successfully without the patch step"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The system SHALL extract manifest merge logic into `hack/ci-merge-manifest.sh` with env var interface",
+      "priority": "SHALL",
+      "rationale": "The docker buildx imagetools create + inspect pattern is repeated across 4 merge operations. A standalone script enables local testing and shellcheck coverage.",
+      "scenarios": [
+        {
+          "name": "Manifest created with multiple tags",
+          "when": "ci-merge-manifest.sh is called with IMAGE, DIGEST_DIR, and TAGS env vars set",
+          "then": "docker buildx imagetools create assembles all digests in DIGEST_DIR into a manifest with the specified tags",
+          "and_then": [
+            "the merged manifest digest is written to GITHUB_OUTPUT as 'digest'"
+          ]
+        },
+        {
+          "name": "No digests found fails with clear error",
+          "when": "ci-merge-manifest.sh is called but DIGEST_DIR is empty",
+          "then": "the script exits 1 with an ::error:: annotation identifying the empty digest directory",
+          "and_then": [
+            "no partial manifest is created"
+          ]
+        },
+        {
+          "name": "Version-only tag restricted to main branch",
+          "when": "ci-merge-manifest.sh is called with EXTRA_TAGS containing a version tag and GITHUB_REF_NAME is not main",
+          "then": "the version-only tag is not applied, only branch-safe tags are used",
+          "and_then": [
+            "the manifest is created with the remaining tags"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The system SHALL extract the unit test execution block into `hack/ci-run-unit-tests.sh`",
+      "priority": "SHALL",
+      "rationale": "The ~50-line inline docker run block with nested bash -c is untestable by shellcheck and impossible to debug locally. Extraction follows the CC-0050 pattern.",
+      "scenarios": [
+        {
+          "name": "Tests run successfully with all env vars",
+          "when": "ci-run-unit-tests.sh is called with SERVICE_NAME, SERVICE_VERSION, INSTALL_SPEC, VENV_BUILDER_IMAGE, and RELEASE set",
+          "then": "the script runs docker with correct volume mounts, env vars, and the nested test commands execute stestr",
+          "and_then": [
+            "test results are written to results/testresults.subunit"
+          ]
+        },
+        {
+          "name": "Test exclude list applied when present",
+          "when": "ci-run-unit-tests.sh is called and releases/<release>/test-excludes/<service>.txt exists",
+          "then": "the exclude list is passed to stestr run as --exclude-list",
+          "and_then": [
+            "excluded tests are not executed"
+          ]
+        },
+        {
+          "name": "Script runs without test-requirements.txt",
+          "when": "the upstream project has no test-requirements.txt",
+          "then": "the script skips the -r test-requirements.txt argument to uv pip install",
+          "and_then": [
+            "installation proceeds with just the install spec and stestr/testtools"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The system SHALL consolidate normalize-image-owner into a single resolution point",
+      "priority": "SHALL",
+      "rationale": "The one-liner is repeated in 5 jobs. Consolidation removes redundancy and ensures consistency.",
+      "scenarios": [
+        {
+          "name": "Image owner available to all jobs",
+          "when": "any job in the workflow needs the lowercase image owner",
+          "then": "the owner is resolved from a single authoritative source (either a dedicated job output or composite action)",
+          "and_then": [
+            "all 5 current inline normalize steps are removed"
+          ]
+        },
+        {
+          "name": "Mixed-case repository owner is lowercased",
+          "when": "GITHUB_REPOSITORY_OWNER contains uppercase characters (e.g. C5C3)",
+          "then": "the resolved owner is lowercase (e.g. c5c3)",
+          "and_then": [
+            "all image references use the lowercase owner"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The system SHALL extract digest export + artifact upload into a composite action `.github/actions/export-digest/action.yaml`",
+      "priority": "SHALL",
+      "rationale": "The mkdir + touch + upload-artifact pattern is repeated for python-base, venv-builder, tempest, and service images.",
+      "scenarios": [
+        {
+          "name": "Digest exported and uploaded",
+          "when": "the composite action is called with a digest value and artifact name",
+          "then": "the digest file is created in the digest directory and uploaded as a GitHub artifact",
+          "and_then": [
+            "the artifact has retention-days: 1 and if-no-files-found: error"
+          ]
+        },
+        {
+          "name": "Custom digest directory",
+          "when": "the composite action is called with a non-default digest-dir",
+          "then": "the digest file is created in the specified directory",
+          "and_then": [
+            "the artifact upload uses the correct path"
+          ]
+        },
+        {
+          "name": "Empty digest fails",
+          "when": "the composite action is called with an empty digest input",
+          "then": "the action fails before creating a file with an empty name",
+          "and_then": [
+            "an error message indicates the digest was empty"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "All extracted scripts SHALL pass shellcheck and follow CC-0050 conventions",
+      "priority": "SHALL",
+      "rationale": "Consistency with established patterns ensures maintainability and enables automated validation by tests/ci/verify_ci_scripts.sh.",
+      "scenarios": [
+        {
+          "name": "Scripts pass shellcheck",
+          "when": "shellcheck --severity=warning is run on all new hack/ci-*.sh scripts",
+          "then": "no warnings or errors are reported",
+          "and_then": [
+            "scripts are compatible with the existing CI shellcheck job"
+          ]
+        },
+        {
+          "name": "Scripts have SPDX headers",
+          "when": "tests/ci/verify_ci_scripts.sh is run",
+          "then": "all new scripts pass the SPDX header check (line 2: copyright, line 4: license)",
+          "and_then": [
+            "the test suite passes with no failures"
+          ]
+        },
+        {
+          "name": "Scripts have set -euo pipefail",
+          "when": "tests/ci/verify_ci_scripts.sh is run",
+          "then": "all new scripts have set -euo pipefail after the header block",
+          "and_then": [
+            "scripts fail fast on errors, unset variables, and pipe failures"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The system SHALL preserve all existing workflow behavior with no functional changes",
+      "priority": "SHALL",
+      "rationale": "This is a pure refactoring — any behavioral change is a regression.",
+      "scenarios": [
+        {
+          "name": "build-images.yaml under 600 lines",
+          "when": "the refactoring is complete",
+          "then": "the workflow file is under 600 lines (orchestration only, no multi-line inline scripts beyond ~5 lines)",
+          "and_then": [
+            "the workflow is primarily composed of job definitions, matrix configs, and action calls"
+          ]
+        },
+        {
+          "name": "All job outputs preserved",
+          "when": "downstream jobs reference needs.*.outputs",
+          "then": "all existing output names and values are unchanged",
+          "and_then": [
+            "python-base-image, python-base-name, python-base-digest, venv-builder-image outputs all exist"
+          ]
+        },
+        {
+          "name": "PR vs push behavior preserved",
+          "when": "the workflow runs on a pull_request event",
+          "then": "images are loaded locally (not pushed by digest), ARM64 is excluded, SBOM/attestation/signing are skipped",
+          "and_then": [
+            "the same conditional logic exists in composite actions via input parameters"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "All composite actions SHALL follow established conventions (SPDX header, CC-ID comment, SHA-pinned actions, shell: bash explicit)",
+      "priority": "SHALL",
+      "rationale": "Consistency with the 4 existing composite actions in .github/actions/ ensures maintainability.",
+      "scenarios": [
+        {
+          "name": "SPDX header present",
+          "when": "a new composite action is created",
+          "then": "it starts with the SPDX-FileCopyrightText and SPDX-License-Identifier header",
+          "and_then": [
+            "followed by a # CC-0055: traceability comment"
+          ]
+        },
+        {
+          "name": "External actions SHA-pinned",
+          "when": "a composite action references an external action",
+          "then": "the reference uses a full SHA hash followed by a # vX.Y.Z comment",
+          "and_then": [
+            "the SHA matches the version currently used in build-images.yaml"
+          ]
+        },
+        {
+          "name": "Shell explicitly set",
+          "when": "a composite action has a run: step",
+          "then": "shell: bash is explicitly set on the step",
+          "and_then": [
+            "no step relies on default shell selection"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create setup-docker-registry composite action (REQ-002, REQ-010)",
+      "description": "Create `.github/actions/setup-docker-registry/action.yaml` with inputs: registry (default ghcr.io), username, password, install-cosign (boolean, default 'true'). Steps: docker/setup-buildx-action, docker/login-action, conditional sigstore/cosign-installer. Follow conventions: SPDX header, # CC-0055 comment, SHA-pinned actions matching current versions (buildx@4d04d5d9, login@b45d80f8, cosign@faadad0c), shell: bash explicit on any run steps. Use inputs.install-cosign != 'false' condition for cosign step.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Create export-digest composite action (REQ-007, REQ-010)",
+      "description": "Create `.github/actions/export-digest/action.yaml` with inputs: digest, artifact-name, digest-dir (default /tmp/digests). Steps: (1) validate digest is non-empty, (2) mkdir -p and touch the digest file, (3) actions/upload-artifact with if-no-files-found: error and retention-days: 1. Pin upload-artifact@bbbca2dd. SPDX header + CC-0055 comment.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-007",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Create hack/ci-merge-manifest.sh script (REQ-004, REQ-008)",
+      "description": "Create `hack/ci-merge-manifest.sh` following CC-0050 conventions. Required env vars: IMAGE (full image name without tag), DIGEST_DIR (path to directory containing digest files), TAGS (space-separated list of full tag references to apply). Optional env vars: INSPECT_TAG (tag to use for digest inspection, default: first tag in TAGS). Logic: (1) validate DIGEST_DIR has at least 1 file, (2) run docker buildx imagetools create with all TAGS and digests, (3) inspect the result and write digest to GITHUB_OUTPUT. Include SPDX header, Feature: CC-0055, set -euo pipefail, ::error:: annotations for empty digest dir.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Create hack/ci-run-unit-tests.sh script (REQ-005, REQ-008)",
+      "description": "Create `hack/ci-run-unit-tests.sh` by extracting the ~50-line docker run block from test-service-images (lines 1204-1252). Required env vars: SERVICE_NAME, SERVICE_VERSION, INSTALL_SPEC, VENV_BUILDER_IMAGE, RELEASE, WORKSPACE_DIR (default: current dir). Optional env vars: OS_TEST_DBAPI_ADMIN_CONNECTION. The script runs docker with the volume mounts, env var passthrough, and nested bash -c block. Include SPDX header, Feature: CC-0055, set -euo pipefail, ::error:: annotations. Must pass shellcheck --severity=warning.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-005",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Create checkout-service-source composite action (REQ-003, REQ-010)",
+      "description": "Create `.github/actions/checkout-service-source/action.yaml` with inputs: service, release, workspace-path (default: $GITHUB_WORKSPACE). Steps: (1) Install yq via mikefarah/yq@b534aa9e, (2) Resolve source ref from releases/<release>/source-refs.yaml with ::error:: on missing, output as source-ref, (3) Checkout upstream openstack/<service> at the resolved ref into src/<service> using actions/checkout@de0fac2e, (4) Apply patches conditionally if patches/<service>/<release>/*.patch exists, (5) Run scripts/apply-constraint-overrides.sh. Outputs: source-ref (the resolved version string). SPDX header + CC-0055 comment.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-003",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "1.6",
+      "title": "Create supply-chain-attest composite action (REQ-001, REQ-010)",
+      "description": "Create `.github/actions/supply-chain-attest/action.yaml` with inputs: image-name (bare image without tag/digest), image-digest (sha256:...), sbom-output-file (e.g. sbom-keystone.cyclonedx.json), grype-category (e.g. grype-keystone), scan-mode ('sbom' or 'image', default 'sbom'), image-ref-for-scan (full ref for image-mode scan, optional). Steps with conditionals: (1) SBOM generation via anchore/sbom-action@e22c3899 (if scan-mode=sbom), (2) Grype SBOM scan via anchore/scan-action@e1165082 (if scan-mode=sbom), (3) Grype image scan via anchore/scan-action@e1165082 (if scan-mode=image), (4) SARIF upload via codeql-action/upload-sarif@c10b8064 (always when sarif output exists), (5) SBOM attestation via actions/attest@59d89421 (if scan-mode=sbom), (6) Build provenance via actions/attest-build-provenance@a2bbfa25 (if scan-mode=sbom), (7) Cosign sign (if scan-mode=sbom). SPDX header + CC-0055 comment.",
+      "level": 1,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Refactor build-base-images job to use new composite actions (REQ-002, REQ-006, REQ-007, REQ-009)",
+      "description": "In build-images.yaml, refactor the build-base-images job: (1) Replace inline docker/setup-buildx-action + docker/login-action with uses: ./.github/actions/setup-docker-registry (install-cosign: false since this job doesn't sign), (2) Replace inline normalize-image-owner step — add a top-level workflow env `IMAGE_OWNER` or a dedicated normalize-owner job whose output is consumed by all downstream jobs, (3) Replace inline digest export + artifact upload for python-base and venv-builder with uses: ./.github/actions/export-digest. Preserve all build step logic (ubuntu digest resolve, metadata, build-push-action).",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002",
+        "REQ-006",
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Refactor merge-base-images job to use new composite actions and script (REQ-001, REQ-002, REQ-004, REQ-006, REQ-009)",
+      "description": "In build-images.yaml, refactor merge-base-images: (1) Replace inline docker setup + cosign with uses: ./.github/actions/setup-docker-registry, (2) Remove inline normalize-image-owner (use resolved owner from 2.1), (3) Replace python-base manifest create+inspect block with call to hack/ci-merge-manifest.sh via env vars, (4) Replace python-base supply chain steps (SBOM, Grype, SARIF, attest, provenance, cosign — lines 265-330) with uses: ./.github/actions/supply-chain-attest, (5) Same for venv-builder manifest merge and supply chain (lines 332-418). Preserve all outputs (python-base-image, python-base-name, python-base-digest, venv-builder-image).",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-004",
+        "REQ-006",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Refactor verify-base-images and generate-matrix jobs (REQ-002, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace verify-base-images inline docker/login-action with uses: ./.github/actions/setup-docker-registry (install-cosign: false, no buildx needed — check if buildx is needed for pulling). Note: verify-base-images only does docker pull + shell scripts, so it may only need login, not buildx. If setup-docker-registry always sets up buildx, that's fine — it's harmless. (2) generate-matrix has no docker steps — no changes needed, just verify it's unchanged.",
+      "level": 2,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.4",
+      "title": "Refactor build-tempest and merge-tempest-image jobs (REQ-001, REQ-002, REQ-006, REQ-004, REQ-007, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace build-tempest inline docker setup with uses: ./.github/actions/setup-docker-registry (install-cosign: false), (2) Remove inline normalize-image-owner from build-tempest, (3) Replace build-tempest digest export + upload with uses: ./.github/actions/export-digest, (4) Replace build-tempest inline Grype+SARIF PR scan with uses: ./.github/actions/supply-chain-attest (scan-mode: image), (5) Replace merge-tempest-image inline docker setup+cosign with uses: ./.github/actions/setup-docker-registry, (6) Remove inline normalize-image-owner from merge-tempest-image, (7) Replace merge-tempest-image manifest merge with hack/ci-merge-manifest.sh, (8) Replace merge-tempest-image supply chain block (lines 649-693) with uses: ./.github/actions/supply-chain-attest.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-004",
+        "REQ-006",
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.5",
+      "title": "Refactor build-service-images job (REQ-001, REQ-002, REQ-003, REQ-007, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace build-service-images source-ref resolution + upstream checkout + patches + constraint overrides (lines 788-819) with uses: ./.github/actions/checkout-service-source, (2) Replace inline docker setup + cosign with uses: ./.github/actions/setup-docker-registry, (3) Replace inline digest export + upload with uses: ./.github/actions/export-digest, (4) Replace inline Grype+SARIF PR scan with uses: ./.github/actions/supply-chain-attest (scan-mode: image). Keep the resolve-extra-pkgs, derive-tags, metadata, and build-push-action steps inline (they are build-specific, not duplicated).",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.6",
+      "title": "Refactor merge-service-images job (REQ-001, REQ-002, REQ-004, REQ-006, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace inline docker setup + cosign with uses: ./.github/actions/setup-docker-registry, (2) Remove inline normalize-image-owner, (3) Replace manifest create+inspect block with hack/ci-merge-manifest.sh, (4) Replace supply chain block (lines 1032-1077) with uses: ./.github/actions/supply-chain-attest.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-004",
+        "REQ-006",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.7",
+      "title": "Refactor test-service-images job (REQ-002, REQ-003, REQ-005, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace source-ref resolution + upstream checkout + patches + constraint overrides (lines 1129-1163, the 'MUST stay in sync' block) with uses: ./.github/actions/checkout-service-source, (2) Replace inline docker/login-action with uses: ./.github/actions/setup-docker-registry (install-cosign: false), (3) Replace the ~50-line inline docker run test block (lines 1204-1252) with a call to hack/ci-run-unit-tests.sh, (4) Remove the manual yq installation (lines 1119-1127) — checkout-service-source installs yq internally.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.8",
+      "title": "Refactor verify-service-images job (REQ-002, REQ-009)",
+      "description": "In build-images.yaml: (1) Replace inline docker/login-action with uses: ./.github/actions/setup-docker-registry (install-cosign: false). The derive-tags and verify steps remain inline as they are job-specific.",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-002",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Create tests/ci/verify_composite_actions.sh test script (REQ-010)",
+      "description": "Create `tests/ci/verify_composite_actions.sh` following the PASS/FAIL/SKIP counter pattern from verify_ci_scripts.sh. Source tests/lib/assertions.sh. Tests: (1) test_spdx_headers — all .github/actions/*/action.yaml files have SPDX headers, (2) test_feature_id_comment — all new CC-0055 actions have a # CC-0055 comment, (3) test_shell_explicit — all run: steps in composite actions have shell: bash, (4) test_sha_pinned_actions — all uses: references to external actions match SHA+comment format (regex: @[a-f0-9]{40} # v). Scan all .github/actions/*/action.yaml files.",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Create tests/ci/verify_build_images_refactor.sh test script (REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-009)",
+      "description": "Create `tests/ci/verify_build_images_refactor.sh` following PASS/FAIL/SKIP pattern. Source tests/lib/assertions.sh. Tests: (1) test_workflow_line_count — wc -l < 600, (2) test_no_must_stay_in_sync_comments — no 'MUST stay in sync' strings, (3) test_normalize_owner_count — 'GITHUB_REPOSITORY_OWNER' appears at most once (or zero if workflow env), (4) test_supply_chain_attest_usage — './.github/actions/supply-chain-attest' appears 4+ times, (5) test_setup_docker_registry_usage — './.github/actions/setup-docker-registry' appears 7+ times, (6) test_checkout_service_source_usage — './.github/actions/checkout-service-source' appears 2+ times, (7) test_export_digest_usage — './.github/actions/export-digest' appears 4+ times, (8) test_ci_merge_manifest_usage — 'ci-merge-manifest.sh' appears 3+ times, (9) test_ci_run_unit_tests_usage — 'ci-run-unit-tests.sh' appears 1+ times, (10) test_no_inline_scripts_over_5_lines — no run: block exceeds 5 lines.",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Update docs/reference/build-images-workflow.md for CC-0055 refactoring (REQ-009)",
+      "description": "Update the existing reference documentation at docs/reference/build-images-workflow.md to reflect the refactoring. Update the step tables for each job (merge-base-images, build-service-images, merge-service-images, etc.) to reference composite actions instead of inline steps. Add a new section 'Composite Actions' documenting supply-chain-attest, setup-docker-registry, checkout-service-source, and export-digest with their inputs/outputs. Add a new section 'CI Scripts' documenting ci-merge-manifest.sh and ci-run-unit-tests.sh with their env var interfaces. Add CC-0055 to the feature list in the frontmatter.",
+      "level": 4,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-009"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_set_euo_pipefail (covers ci-merge-manifest.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-merge-manifest.sh contains 'set -euo pipefail'",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_set_euo_pipefail (covers ci-run-unit-tests.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-run-unit-tests.sh contains 'set -euo pipefail'",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_shellcheck (covers ci-merge-manifest.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-merge-manifest.sh passes shellcheck --severity=warning",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_shellcheck (covers ci-run-unit-tests.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-run-unit-tests.sh passes shellcheck --severity=warning",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_spdx_headers (covers ci-merge-manifest.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-merge-manifest.sh has SPDX header at lines 2 and 4",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_spdx_headers (covers ci-run-unit-tests.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-run-unit-tests.sh has SPDX header at lines 2 and 4",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_error_annotations (covers ci-merge-manifest.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-merge-manifest.sh has ::error:: annotations for required env vars",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_ci_scripts.sh",
+      "test_function": "test_error_annotations (covers ci-run-unit-tests.sh)",
+      "story": "CI maintainer confirms all extracted scripts pass verification tests",
+      "expected": "ci-run-unit-tests.sh has ::error:: annotations for required env vars",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/ci/verify_composite_actions.sh",
+      "test_function": "test_spdx_headers",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "All new composite actions (supply-chain-attest, setup-docker-registry, checkout-service-source, export-digest) have SPDX headers",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/ci/verify_composite_actions.sh",
+      "test_function": "test_feature_id_comment",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "All new composite actions have a # CC-0055 traceability comment",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/ci/verify_composite_actions.sh",
+      "test_function": "test_shell_explicit",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "All composite action run: steps have explicit shell: bash",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/ci/verify_composite_actions.sh",
+      "test_function": "test_sha_pinned_actions",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "All external action references in composite actions use SHA+comment pin format",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_workflow_line_count",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "build-images.yaml is under 600 lines",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_no_inline_scripts_over_5_lines",
+      "story": "CI maintainer confirms no functional change to workflow behavior",
+      "expected": "No inline run: block in build-images.yaml exceeds 5 lines",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_no_must_stay_in_sync_comments",
+      "story": "CI maintainer uses checkout-service-source composite action eliminating sync comments",
+      "expected": "build-images.yaml contains no 'MUST stay in sync' comments",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_normalize_owner_count",
+      "story": "CI maintainer sees normalize-image-owner handled as workflow-level env",
+      "expected": "The normalize image owner one-liner appears at most once in build-images.yaml (in a dedicated job or not at all if using workflow env)",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_supply_chain_attest_usage",
+      "story": "CI maintainer uses supply-chain-attest composite action for all image types",
+      "expected": "build-images.yaml references ./.github/actions/supply-chain-attest at least 4 times (python-base, venv-builder, tempest, service)",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_setup_docker_registry_usage",
+      "story": "CI maintainer uses setup-docker-registry composite action across all jobs",
+      "expected": "build-images.yaml references ./.github/actions/setup-docker-registry in all jobs that need docker access",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_checkout_service_source_usage",
+      "story": "CI maintainer uses checkout-service-source composite action eliminating sync comments",
+      "expected": "build-images.yaml references ./.github/actions/checkout-service-source in both build-service-images and test-service-images",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_export_digest_usage",
+      "story": "CI maintainer uses digest-export composite action for all images",
+      "expected": "build-images.yaml references ./.github/actions/export-digest for all digest export operations",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_ci_merge_manifest_usage",
+      "story": "CI maintainer uses ci-merge-manifest.sh for all manifest merge operations",
+      "expected": "build-images.yaml calls hack/ci-merge-manifest.sh in merge-base-images, merge-tempest-image, and merge-service-images",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/ci/verify_build_images_refactor.sh",
+      "test_function": "test_ci_run_unit_tests_usage",
+      "story": "CI maintainer uses ci-run-unit-tests.sh for service test execution",
+      "expected": "build-images.yaml calls hack/ci-run-unit-tests.sh in test-service-images",
+      "requirement_id": "REQ-005"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "build-images.yaml is under 600 lines and contains no inline run: blocks exceeding 5 lines",
+    "All 4 new composite actions have SPDX headers, CC-0055 comments, SHA-pinned external actions, and explicit shell: bash on run steps",
+    "Both new hack/ci-*.sh scripts pass shellcheck --severity=warning and tests/ci/verify_ci_scripts.sh",
+    "No 'MUST stay in sync' comments remain in build-images.yaml — checkout-service-source is the single source of truth",
+    "All existing job outputs (python-base-image, python-base-name, python-base-digest, venv-builder-image) are preserved unchanged",
+    "PR vs push conditional behavior is preserved: images loaded locally on PR, pushed by digest on push; SBOM/attestation/signing skipped on PR",
+    "Normalize-image-owner one-liner appears at most once in build-images.yaml",
+    "tests/ci/verify_build_images_refactor.sh passes with all assertions green",
+    "tests/ci/verify_composite_actions.sh passes with all assertions green",
+    "docs/reference/build-images-workflow.md is updated with composite action and script documentation"
+  ],
+  "implementation_notes": "## Architecture\n\nThis is a pure refactoring of `.github/workflows/build-images.yaml` (1295 lines → <600 lines). No behavioral changes.\n\n### Component Diagram\n\n```\nbuild-images.yaml (orchestration)\n  ├── .github/actions/setup-docker-registry/     (login + buildx + cosign)\n  ├── .github/actions/supply-chain-attest/        (SBOM + Grype + SARIF + attest + provenance + cosign)\n  ├── .github/actions/checkout-service-source/    (source-ref + checkout + patches + constraints)\n  ├── .github/actions/export-digest/              (mkdir + touch + upload-artifact)\n  ├── .github/actions/platform-pair/              (existing)\n  ├── .github/actions/derive-service-tags/        (existing)\n  ├── hack/ci-merge-manifest.sh                   (imagetools create + inspect)\n  └── hack/ci-run-unit-tests.sh                   (docker run test execution)\n```\n\n### Normalize Image Owner Strategy\n\nThe `echo \"owner=${GITHUB_REPOSITORY_OWNER,,}\"` one-liner appears in 5 jobs. Options:\n1. **Workflow-level env** — Cannot use `${{ github.repository_owner }}` in env because bash lowercasing `,,` is not available in expression context.\n2. **Dedicated step in composite actions** — Each composite action that needs the owner could accept it as an input, pushing resolution to the caller.\n3. **Single job output** — A lightweight job (or folded into lint-dockerfiles) resolves the owner once; downstream jobs consume via `needs.*.outputs`.\n\nRecommended: Option 2 (accept as input). Each composite action that needs the image owner takes it as an input parameter. The workflow still needs one normalize step per job that uses the owner directly, but composite actions abstract it away. This matches how derive-service-tags already accepts `repository-owner` as input.\n\nAlternatively, move to a top-level env using the GitHub expression (which already lowercases): `env: IMAGE_OWNER: ${{ github.repository_owner }}` — but GHCR requires lowercase and `github.repository_owner` preserves original casing. The safest approach is a single normalize job whose output is consumed by all downstream jobs via `needs`.\n\n### Key Design Decisions\n\n1. **supply-chain-attest scan-mode input**: PR scans use image-mode (scan locally-loaded image), push scans use sbom-mode (generate SBOM first). The composite action handles both via a single `scan-mode` input rather than separate actions.\n\n2. **ci-merge-manifest.sh TAGS interface**: Tags are passed as space-separated env var rather than positional args, following the established CC-0050 env var pattern. The script splits TAGS and constructs -t flags.\n\n3. **checkout-service-source installs yq internally**: This avoids the manual yq installation in test-service-images (lines 1119-1127) which used a different installation method than the mikefarah/yq action used elsewhere.\n\n### Potential Pitfalls\n\n1. **Composite action output propagation**: Composite actions cannot set job-level outputs directly. The workflow must map step outputs from the composite action to job outputs explicitly.\n2. **Conditional steps in composite actions**: GitHub Actions composite actions support `if:` conditions on steps, but the condition syntax must use `inputs.*` not `github.*` for action-level conditionals.\n3. **hashFiles in composite actions**: The `hashFiles()` function works differently in composite actions — the path is relative to the repository root, which should be correct for the patches check.\n4. **secrets in composite actions**: Composite actions cannot access secrets directly. The workflow must pass secrets as inputs (e.g., GITHUB_TOKEN for docker login).",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:16:56.962875"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:16:57.218016"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:24:22.785866"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "1637e759-9c86-44b5-b28f-b900f48e6cb3",
+      "timestamp": "2026-04-09T21:24:22.785892",
+      "total_duration": 441.7351574897766,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 441.7351574897766,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
