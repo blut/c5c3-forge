@@ -1,0 +1,556 @@
+{
+  "feature_id": "CC-0054",
+  "title": "Add chaos E2E tests to CI pipeline",
+  "slug": "add-chaos-e2e-tests-to-ci-pipeline",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #165: Add chaos E2E tests to CI pipeline\n\n## Summary\n\nThe chaos test framework introduced in CC-0047 (12a8c92) provides Chainsaw-based chaos E2E tests using Chaos Mesh `PodChaos` CRDs (MariaDB, Memcached, OpenBao pod-kill scenarios). These tests are currently only runnable locally via `make e2e-chaos` but are **not integrated into the CI pipeline**.\n\nAs more chaos test scenarios are planned, CI integration is needed to ensure operator resilience is continuously validated.\n\n## Current state\n\n- Three chaos scenarios exist under `tests/e2e-chaos/`:\n  - `mariadb-pod-kill` (SC-CHAOS-001)\n  - `memcached-pod-kill` (SC-CHAOS-002)\n  - `openbao-pod-kill` (SC-CHAOS-003)\n- A dedicated Chainsaw config exists at `tests/e2e-chaos/chainsaw-config.yaml` with serial execution and extended timeouts (5m assert, 2m cleanup)\n- A `make e2e-chaos` target exists in the Makefile\n- No reference to chaos tests exists in `.github/workflows/ci.yaml`\n\n## Requirements\n\n- [ ] Add a `e2e-chaos` job to the CI workflow (`.github/workflows/ci.yaml`)\n- [ ] The job needs a kind cluster with Chaos Mesh installed (in addition to the standard E2E infrastructure)\n- [ ] Wire up change detection so chaos tests run when `tests/e2e-chaos/**` or operator/shared code changes\n- [ ] Chaos tests must run **after** the regular E2E tests pass (they depend on a working baseline)\n- [ ] Collect JUnit reports and diagnostics artifacts on failure (as done for other E2E jobs)\n- [ ] Consider whether chaos tests should be required to pass for merge or run as informational/non-blocking initially\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/165",
+  "stories": [
+    {
+      "title": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "role": "CI engineer",
+      "want": "chaos E2E tests to run automatically in the CI pipeline when operator code or chaos test definitions change",
+      "so_that": "operator resilience is continuously validated without manual intervention",
+      "criteria": [
+        "A `e2e-chaos` job exists in `.github/workflows/ci.yaml`",
+        "The job triggers when `tests/e2e-chaos/**` files change",
+        "The job triggers when Go operator or shared code changes",
+        "The job triggers on `v*` tag pushes",
+        "The job does NOT trigger on docs-only or helm-only changes"
+      ]
+    },
+    {
+      "title": "Chaos tests run after regular E2E tests verify baseline",
+      "role": "developer",
+      "want": "chaos tests to run only after the regular E2E operator tests pass or are skipped",
+      "so_that": "chaos tests do not waste CI resources testing a broken operator baseline",
+      "criteria": [
+        "The `e2e-chaos` job depends on `e2e-operator` completing without failure",
+        "The `e2e-chaos` job depends on pre-flight checks (lint, test, test-integration, shellcheck, verify-codegen) completing without failure",
+        "The `e2e-chaos` job still runs when `e2e-operator` is skipped (chaos-only changes)",
+        "The `e2e-chaos` job is blocked when any pre-flight check fails"
+      ]
+    },
+    {
+      "title": "Chaos test failures are diagnosable via CI artifacts",
+      "role": "developer",
+      "want": "JUnit reports and diagnostic information to be collected when chaos tests run",
+      "so_that": "I can diagnose failures without reproducing them locally",
+      "criteria": [
+        "JUnit report is uploaded as artifact named `e2e-chaos-junit-report` with 14-day retention",
+        "Diagnostic information (pod status, logs, events, Chaos Mesh status) is dumped on failure via `hack/ci-dump-diagnostics.sh`",
+        "The JUnit report name is distinct from other E2E report artifacts"
+      ]
+    },
+    {
+      "title": "Chaos test failures do not block PR merges initially",
+      "role": "team lead",
+      "want": "chaos tests to run as non-blocking (informational) initially",
+      "so_that": "newly integrated chaos tests do not block development while their stability is being proven in CI",
+      "criteria": [
+        "The `e2e-chaos` job uses `continue-on-error: true`",
+        "Publish jobs (`build-and-push`, `helm-push`) do NOT depend on `e2e-chaos`",
+        "The overall workflow status is not affected by chaos test failures",
+        "A YAML comment documents the non-blocking rationale and when to revisit"
+      ]
+    },
+    {
+      "title": "CI documentation reflects chaos test integration",
+      "role": "developer",
+      "want": "the CI workflow and chaos test reference docs to accurately describe the chaos CI job",
+      "so_that": "I can understand when and how chaos tests run in CI without reading the workflow YAML",
+      "criteria": [
+        "`docs/reference/ci-workflow.md` includes the `e2e-chaos` job in the Job Dependency DAG",
+        "`docs/reference/ci-workflow.md` documents the `e2e-chaos` job configuration",
+        "`docs/reference/chaos-e2e-tests.md` CI Trigger Policy section is updated from placeholder to actual implementation",
+        "Change detection filters for `e2e_chaos` are documented"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The CI workflow SHALL include an `e2e-chaos` job that runs all Chainsaw chaos E2E tests",
+      "priority": "SHALL",
+      "rationale": "Continuous validation of operator resilience prevents regressions in fault recovery behavior",
+      "scenarios": [
+        {
+          "name": "Chaos job exists and runs chaos tests",
+          "when": "the CI pipeline runs with `e2e-chaos` change detection output set to `true`",
+          "then": "a job named `e2e-chaos` executes `chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/`",
+          "and_then": [
+            "all 3 chaos scenarios (mariadb-pod-kill, memcached-pod-kill, openbao-pod-kill) are executed serially"
+          ]
+        },
+        {
+          "name": "Chaos job deploys full infrastructure and operator",
+          "when": "the `e2e-chaos` job starts",
+          "then": "the job creates a kind cluster, builds and loads the keystone operator and service images, deploys the infrastructure stack (including Chaos Mesh), and deploys the keystone operator",
+          "and_then": [
+            "the operator webhook is ready before chaos tests begin"
+          ]
+        },
+        {
+          "name": "Chaos job uses dedicated Chainsaw config",
+          "when": "the chaos tests execute",
+          "then": "Chainsaw uses `tests/e2e-chaos/chainsaw-config.yaml` with 5m assert timeout, 2m cleanup timeout, and serial execution",
+          "and_then": [
+            "the happy-path config at `tests/e2e/chainsaw-config.yaml` is NOT used"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The change detection SHALL trigger chaos tests when `tests/e2e-chaos/**` files or Go operator/shared code changes",
+      "priority": "SHALL",
+      "rationale": "Chaos tests validate operator resilience, so they must run when operator code changes or when chaos test definitions change",
+      "scenarios": [
+        {
+          "name": "Chaos test file changes trigger job",
+          "when": "a PR modifies only files under `tests/e2e-chaos/`",
+          "then": "the `changes` job outputs `e2e-chaos=true`",
+          "and_then": [
+            "the `e2e-chaos` job is triggered"
+          ]
+        },
+        {
+          "name": "Go shared code changes trigger job",
+          "when": "a PR modifies files under `internal/` or `go.work`",
+          "then": "the `changes` job outputs `e2e-chaos=true` (via `go_changed=true`)",
+          "and_then": [
+            "both `e2e-operator` and `e2e-chaos` are triggered"
+          ]
+        },
+        {
+          "name": "Operator code changes trigger job",
+          "when": "a PR modifies files under `operators/keystone/`",
+          "then": "the `changes` job outputs `e2e-chaos=true` (via `go_changed=true`)",
+          "and_then": [
+            "both `e2e-operator` and `e2e-chaos` are triggered"
+          ]
+        },
+        {
+          "name": "Tag pushes trigger job",
+          "when": "a `v*` tag is pushed",
+          "then": "all areas are forced active including `e2e-chaos=true`",
+          "and_then": [
+            "the full release pipeline runs including chaos tests"
+          ]
+        },
+        {
+          "name": "Docs-only changes do not trigger job",
+          "when": "a PR modifies only files under `docs/`",
+          "then": "the `changes` job outputs `e2e-chaos=false`",
+          "and_then": [
+            "the `e2e-chaos` job is skipped"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The `e2e-chaos` job SHALL depend on pre-flight checks and the `e2e-operator` job, blocking when either fails",
+      "priority": "SHALL",
+      "rationale": "Chaos tests assume a working operator baseline; running them against broken code wastes CI resources and produces misleading failures",
+      "scenarios": [
+        {
+          "name": "Job runs after e2e-operator succeeds",
+          "when": "all pre-flight checks pass and `e2e-operator` succeeds",
+          "then": "the `e2e-chaos` job runs",
+          "and_then": []
+        },
+        {
+          "name": "Job runs when e2e-operator is skipped",
+          "when": "only chaos test definitions changed (no Go code changes) and `e2e-operator` is skipped",
+          "then": "the `e2e-chaos` job still runs (skipped ≠ failure)",
+          "and_then": [
+            "pre-flight checks are also skipped since no Go code changed, which is acceptable"
+          ]
+        },
+        {
+          "name": "Job blocked when pre-flight fails",
+          "when": "the `lint` or `test` job fails",
+          "then": "the `e2e-chaos` job does not run",
+          "and_then": [
+            "the condition `!contains(needs.*.result, 'failure')` evaluates to false"
+          ]
+        },
+        {
+          "name": "Job blocked when e2e-operator fails",
+          "when": "`e2e-operator` fails (operator baseline broken)",
+          "then": "the `e2e-chaos` job does not run",
+          "and_then": [
+            "CI resources are not wasted on chaos tests against a broken operator"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The `e2e-chaos` job SHALL upload JUnit test reports as workflow artifacts",
+      "priority": "SHALL",
+      "rationale": "JUnit reports enable CI result visibility in GitHub PR checks and external dashboards",
+      "scenarios": [
+        {
+          "name": "JUnit report uploaded on success",
+          "when": "chaos tests pass",
+          "then": "the JUnit report at `_output/reports/` is uploaded as artifact `e2e-chaos-junit-report`",
+          "and_then": [
+            "artifact retention is 14 days"
+          ]
+        },
+        {
+          "name": "JUnit report uploaded on failure",
+          "when": "chaos tests fail",
+          "then": "the JUnit report is still uploaded (via `if: always()`)",
+          "and_then": [
+            "partial results from tests that ran before failure are included"
+          ]
+        },
+        {
+          "name": "Report name is distinct",
+          "when": "multiple E2E jobs run in the same workflow",
+          "then": "the chaos report artifact name `e2e-chaos-junit-report` does not collide with `e2e-infra-junit-report` or `e2e-{operator}-junit-report`",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The `e2e-chaos` job SHALL dump diagnostic information on failure using the shared diagnostic script",
+      "priority": "SHALL",
+      "rationale": "Diagnostic output enables root cause analysis without local reproduction, following the established pattern from e2e-infra and e2e-operator jobs",
+      "scenarios": [
+        {
+          "name": "Diagnostics dumped on failure",
+          "when": "the `e2e-chaos` job fails at any step",
+          "then": "`hack/ci-dump-diagnostics.sh` runs with `OPERATOR=keystone` to collect HelmRelease status, pod status, DaemonSet status, chaos-daemon details, events, operator logs, CR conditions",
+          "and_then": [
+            "diagnostic output is captured in the job log"
+          ]
+        },
+        {
+          "name": "Diagnostics run always",
+          "when": "the `e2e-chaos` job completes (success or failure)",
+          "then": "the diagnostics step executes with `if: always()`",
+          "and_then": [
+            "diagnostics are available even on timeout failures"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The `e2e-chaos` job SHALL use `continue-on-error: true` for non-blocking behavior initially",
+      "priority": "SHALL",
+      "rationale": "Chaos tests are newly integrated into CI and may exhibit environmental flakiness (pod restart timing, Chaos Mesh finalization); non-blocking prevents blocking development while stability is proven",
+      "scenarios": [
+        {
+          "name": "Job failure does not block workflow",
+          "when": "the `e2e-chaos` job fails",
+          "then": "the overall workflow status is not affected (continues as if the job succeeded)",
+          "and_then": [
+            "the job shows a yellow warning icon in the GitHub UI, not a red failure"
+          ]
+        },
+        {
+          "name": "Publish jobs unaffected",
+          "when": "the `e2e-chaos` job fails and the workflow is a push to main",
+          "then": "the `build-and-push`, `helm-push`, and `merge-operator-images` jobs proceed normally",
+          "and_then": [
+            "publish jobs do NOT list `e2e-chaos` in their `needs`"
+          ]
+        },
+        {
+          "name": "Release pipeline unaffected",
+          "when": "the `e2e-chaos` job fails on a `v*` tag push",
+          "then": "the `github-release` job proceeds normally",
+          "and_then": [
+            "the release is not blocked by chaos test failures"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The `e2e-chaos` job SHALL deploy a kind cluster with the full infrastructure stack including Chaos Mesh",
+      "priority": "SHALL",
+      "rationale": "Chaos tests require Chaos Mesh CRDs and controllers to inject PodChaos faults, and the operator needs the full infrastructure stack (MariaDB, Memcached, OpenBao, ESO) as dependencies",
+      "scenarios": [
+        {
+          "name": "Kind cluster created with standard config",
+          "when": "the `e2e-chaos` job starts",
+          "then": "a kind cluster named `forge-e2e` is created using `hack/kind-config.yaml`",
+          "and_then": [
+            "the cluster has a single control-plane node"
+          ]
+        },
+        {
+          "name": "Infrastructure includes Chaos Mesh",
+          "when": "the `setup-e2e-infra` composite action completes",
+          "then": "the Chaos Mesh HelmRelease is Ready in the `chaos-mesh` namespace",
+          "and_then": [
+            "PodChaos CRDs are available and the `chaos-daemon` DaemonSet is running"
+          ]
+        },
+        {
+          "name": "Keystone operator is deployed and ready",
+          "when": "the infrastructure setup completes",
+          "then": "the keystone operator is deployed via `hack/ci-deploy-operator.sh` with the locally-built dev image",
+          "and_then": [
+            "the operator webhook is accepting traffic before chaos tests begin"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The `e2e-chaos` job SHALL have a timeout of 60 minutes to accommodate serial chaos test execution",
+      "priority": "SHALL",
+      "rationale": "Chaos tests run serially (parallel: 1) with 5-minute assert timeouts per step. 3 scenarios × 6 steps × up to 5 min each plus 10-15 min cluster setup requires at least 45 min, with 60 min as a safe buffer",
+      "scenarios": [
+        {
+          "name": "Job timeout set appropriately",
+          "when": "the `e2e-chaos` job definition is inspected",
+          "then": "`timeout-minutes: 60` is set on the job",
+          "and_then": [
+            "this exceeds the `e2e-operator` timeout of 45 min to account for serial execution and longer assert windows"
+          ]
+        },
+        {
+          "name": "Job does not time out under normal conditions",
+          "when": "all 3 chaos scenarios execute successfully",
+          "then": "the total execution time is well within the 60-minute timeout",
+          "and_then": [
+            "typical expected runtime is 30-45 min (10-15 min setup + 20-30 min tests)"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add `e2e_chaos` path filter and `e2e-chaos` output to ci.yaml changes job (REQ-002, CC-0054)",
+      "description": "In `.github/workflows/ci.yaml`, add an `e2e_chaos` filter to the `dorny/paths-filter` step (after the existing `e2e_infra` filter) matching `tests/e2e-chaos/**`. Add `e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}` to the `changes` job outputs. Add `FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}` to the `Resolve effective changes` step env block. Pattern: follow the existing `e2e_infra` filter structure.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Wire `e2e-chaos` output through `hack/ci-resolve-changes.sh` (REQ-002, CC-0054)",
+      "description": "In `hack/ci-resolve-changes.sh`, add logic to emit `e2e-chaos` output after the existing operator detection block (after `echo \"go=${go_changed}\"`). The output should be `true` when `FILTER_e2e_chaos=true` OR `go_changed=true` (covers operator/shared code changes and tag pushes). Add a comment explaining the trigger logic. Verify the script passes `shellcheck --severity=warning`.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add `e2e-chaos` job to ci.yaml (REQ-001, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, CC-0054)",
+      "description": "Add the `e2e-chaos` job to `.github/workflows/ci.yaml` between `e2e-operator` and `tempest`. Structure: `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, e2e-operator]`, `if: needs.changes.outputs.e2e-chaos == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')`, `runs-on: ubuntu-latest`, `timeout-minutes: 60`, `continue-on-error: true`. Steps: (1) checkout, (2) setup-go, (3) create kind cluster (helm/kind-action with hack/kind-config.yaml, cluster forge-e2e), (4) build operator image (`make docker-build OPERATOR=keystone IMG=...`), (5) build service image (hack/ci-build-service-image.sh with OPERATOR=keystone), (6) load images into kind, (7) setup E2E infra (composite action), (8) deploy operator (hack/ci-deploy-operator.sh with OPERATOR=keystone), (9) run chaos tests (`mkdir -p _output/reports && chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/`), (10) dump diagnostics (`if: always()`, OPERATOR=keystone), (11) upload JUnit report (`if: always()`, name `e2e-chaos-junit-report`, path `_output/reports/`, retention 14 days). Follow the e2e-operator job structure exactly for steps 1-8, simplifying where chaos tests don't need the 2026.1 image or upgrade tag.",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update `docs/reference/ci-workflow.md` with e2e-chaos job documentation (REQ-001, CC-0054)",
+      "description": "Update `docs/reference/ci-workflow.md`: (1) Add CC-0054 to the frontmatter `feature` field. (2) Update the Job Dependency DAG ASCII diagram to include `e2e-chaos` in the E2E Jobs section with its dependency chain. (3) Add an `### e2e-chaos` subsection (after `e2e-operator`) documenting: trigger condition, dependencies, timeout, continue-on-error rationale, steps table, and change detection filter. (4) Update the job count in the DAG description. Follow the formatting pattern of the existing `### e2e-operator` subsection.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Update `docs/reference/chaos-e2e-tests.md` CI Trigger Policy section (REQ-001, REQ-002, CC-0054)",
+      "description": "Update `docs/reference/chaos-e2e-tests.md`: (1) Add CC-0054 to the frontmatter `feature` field. (2) Replace the placeholder `CI Trigger Policy (Planned)` section (lines 86-96) with the actual implementation details: change detection triggers (chaos test files, Go code, tag pushes), dependency on e2e-operator, non-blocking behavior (continue-on-error), job timeout, and artifact collection. Remove the `> Note: CI integration is planned for a follow-up PR` callout.",
+      "level": 3,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-001",
+        "REQ-002"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos job exists with correct structure",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "The `e2e-chaos` job is defined with kind cluster setup, operator build/deploy, chaos test execution, artifact upload, and diagnostics dump",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos job runs correct chainsaw command",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "The test step runs `chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/` in a directory with `_output/reports/` pre-created",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "hack/ci-resolve-changes.sh",
+      "test_function": "[unit] e2e-chaos output true when FILTER_e2e_chaos is true",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "Running the script with `FILTER_e2e_chaos=true` and `FILTER_go_common=false` produces `e2e-chaos=true` in GITHUB_OUTPUT",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "hack/ci-resolve-changes.sh",
+      "test_function": "[unit] e2e-chaos output true when go_changed is true",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "Running the script with `FILTER_e2e_chaos=false` and `FILTER_go_common=true` produces `e2e-chaos=true` in GITHUB_OUTPUT",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "hack/ci-resolve-changes.sh",
+      "test_function": "[unit] e2e-chaos output true on tag push",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "Running the script with `GITHUB_REF=refs/tags/v1.0.0` produces `e2e-chaos=true` in GITHUB_OUTPUT",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "hack/ci-resolve-changes.sh",
+      "test_function": "[unit] e2e-chaos output false when only docs change",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "Running the script with `FILTER_e2e_chaos=false`, `FILTER_go_common=false`, and no operator filters produces `e2e-chaos=false`",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos depends on e2e-operator and pre-flight checks",
+      "story": "Chaos tests run after regular E2E tests verify baseline",
+      "expected": "The `e2e-chaos` job `needs` includes `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, and `e2e-operator`",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos if condition blocks on failure",
+      "story": "Chaos tests run after regular E2E tests verify baseline",
+      "expected": "The `if` condition includes `!contains(needs.*.result, 'failure')` and `!contains(needs.*.result, 'cancelled')` to block when any dependency fails",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] JUnit report uploaded as e2e-chaos-junit-report",
+      "story": "Chaos test failures are diagnosable via CI artifacts",
+      "expected": "The upload-artifact step uses `name: e2e-chaos-junit-report`, `path: _output/reports/`, `retention-days: 14`, and `if: always()`",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] JUnit report uploaded regardless of test outcome",
+      "story": "Chaos test failures are diagnosable via CI artifacts",
+      "expected": "The upload-artifact step has `if: always()` so reports are uploaded even when chaos tests fail",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] diagnostics dumped on failure with OPERATOR=keystone",
+      "story": "Chaos test failures are diagnosable via CI artifacts",
+      "expected": "The diagnostics step runs `hack/ci-dump-diagnostics.sh` with `env: OPERATOR: keystone` and `if: always()`",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] diagnostics step runs always",
+      "story": "Chaos test failures are diagnosable via CI artifacts",
+      "expected": "The diagnostics step has `if: always()` so it runs even on timeout or test failures",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] continue-on-error true on e2e-chaos job",
+      "story": "Chaos test failures do not block PR merges initially",
+      "expected": "The `e2e-chaos` job has `continue-on-error: true` at the job level",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] publish jobs do not depend on e2e-chaos",
+      "story": "Chaos test failures do not block PR merges initially",
+      "expected": "The `build-and-push`, `helm-push`, `merge-operator-images`, and `github-release` jobs do NOT list `e2e-chaos` in their `needs`",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos creates kind cluster and deploys infra",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "The job creates a kind cluster via `helm/kind-action@v1.14.0` with `config: hack/kind-config.yaml` and `cluster_name: forge-e2e`, then runs the `setup-e2e-infra` composite action",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos builds and deploys keystone operator",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "The job builds the keystone operator image, builds the 2025.2 service image, loads both into kind, and deploys via `hack/ci-deploy-operator.sh`",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": ".github/workflows/ci.yaml",
+      "test_function": "[e2e] e2e-chaos job timeout is 60 minutes",
+      "story": "CI pipeline runs chaos E2E tests on relevant code changes",
+      "expected": "The `e2e-chaos` job has `timeout-minutes: 60`",
+      "requirement_id": "REQ-008"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "The `e2e-chaos` job YAML is syntactically valid and follows the structure of the existing `e2e-operator` job (same action versions, SHA pins, env patterns)",
+    "Change detection correctly outputs `e2e-chaos=true` for chaos test file changes, Go code changes, and tag pushes; `false` for docs/helm-only changes",
+    "The `hack/ci-resolve-changes.sh` script passes `shellcheck --severity=warning` after modifications",
+    "The `e2e-chaos` job uses `continue-on-error: true` and is NOT listed in the `needs` of any publish or release job",
+    "JUnit report artifact name `e2e-chaos-junit-report` does not conflict with existing artifact names (`e2e-infra-junit-report`, `e2e-{operator}-junit-report`)",
+    "All YAML comments include the CC-0054 feature ID for traceability",
+    "Documentation in `docs/reference/ci-workflow.md` and `docs/reference/chaos-e2e-tests.md` accurately reflects the implemented behavior",
+    "The Job Dependency DAG in ci-workflow.md correctly shows `e2e-chaos` dependencies and non-blocking nature"
+  ],
+  "implementation_notes": "## Architectural Decisions\n\n1. **Independent cluster per job**: The `e2e-chaos` job creates its own kind cluster rather than sharing with `e2e-operator`. This follows the existing pattern where each E2E job is isolated. Trade-off: longer total CI time but simpler and more reliable.\n\n2. **Non-blocking via `continue-on-error: true`**: Job-level (not step-level) continue-on-error. This means the entire chaos job is informational. The GitHub UI shows a yellow warning icon for failures but the workflow succeeds. Revisit when chaos test stability is proven over 2-4 weeks of CI runs.\n\n3. **Change detection via `go_changed` flag**: Rather than duplicating operator path filters, the chaos job leverages the existing `go_changed` boolean which is true when ANY Go code (shared or per-operator) changes. This means chaos tests run whenever regular E2E tests would run, plus when chaos test definitions change independently.\n\n4. **Keystone-only (no matrix)**: All 3 chaos scenarios test keystone operator resilience. A matrix strategy is unnecessary. When chaos tests are added for other operators, the job can be converted to a matrix.\n\n5. **No 2026.1 or upgrade images**: Chaos tests use `image.tag: 2025.2` (default release). The 2026.1 build and upgrade tag steps from e2e-operator are omitted to save ~2 min CI time.\n\n## Job Dependency Graph\n\n```\nchanges ──┬── lint ────────────┐\n          ├── shellcheck ──────┤\n          ├── test ────────────┤\n          ├── test-integration ┤\n          ├── verify-codegen ──┤\n          │                    ├──> e2e-operator ──┬──> build-and-push ──> merge-images\n          │                    │                   ├──> helm-push\n          │                    │                   │\n          │                    └──> e2e-chaos ─────┘ (non-blocking, no downstream deps)\n          ├── e2e-infra\n          ├── test-race\n          ├── helm-validate\n          └── docs\n```\n\n## Data Flow: Change Detection\n\n```\n1. dorny/paths-filter evaluates e2e_chaos filter against PR diff\n2. ci-resolve-changes.sh reads FILTER_e2e_chaos env var\n3. Script emits e2e-chaos=true when:\n   - FILTER_e2e_chaos=true (chaos test files changed), OR\n   - go_changed=true (operator/shared code changed OR tag push)\n4. e2e-chaos job evaluates: needs.changes.outputs.e2e-chaos == 'true'\n```\n\n## Pitfalls\n\n- **GitHub Actions skipped-job behavior**: When `e2e-operator` is skipped (no operator changes), its `result` is `skipped` (not `failure`). The `!contains(needs.*.result, 'failure')` check correctly allows the chaos job to proceed. Do NOT use `success()` or `needs.e2e-operator.result == 'success'` as the condition — this would block chaos tests when e2e-operator is skipped.\n\n- **Chaos Mesh already in deploy-infra**: The `deploy-infra.sh` script deploys Chaos Mesh as a HelmRelease. No additional Chaos Mesh installation step is needed. The `setup-e2e-infra` composite action handles everything.\n\n- **Serial execution timing**: With `parallel: 1` in the chaos config and 5m assert timeouts, worst-case test execution is ~30 min (3 scenarios × ~10 min each). The 60-min job timeout provides adequate buffer for cluster setup.\n\n## Key Files\n\n- `.github/workflows/ci.yaml` — Main CI workflow (lines 39-109 for change detection, lines 336-411 for e2e-operator pattern)\n- `hack/ci-resolve-changes.sh` — Change detection script (emit e2e-chaos output after line 73)\n- `.github/actions/setup-e2e-infra/action.yaml` — Composite action reused by e2e-chaos job\n- `hack/ci-deploy-operator.sh` — Operator deployment reused by e2e-chaos job\n- `hack/ci-dump-diagnostics.sh` — Diagnostic script reused by e2e-chaos job\n- `hack/ci-build-service-image.sh` — Service image build reused by e2e-chaos job\n- `tests/e2e-chaos/chainsaw-config.yaml` — Chaos-specific Chainsaw config (serial, extended timeouts)\n- `docs/reference/ci-workflow.md` — CI docs to update\n- `docs/reference/chaos-e2e-tests.md` — Chaos test docs to update",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:06:22.130689"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:06:22.385932"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-09T21:16:40.128218"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "f0229407-037f-445d-bcb2-5c43cb285923",
+      "timestamp": "2026-04-09T21:16:40.128255",
+      "total_duration": 614.770268201828,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 614.770268201828,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
