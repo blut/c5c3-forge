@@ -1,0 +1,616 @@
+{
+  "feature_id": "CC-0058",
+  "title": "Add policy validation Job before Deployment rollout",
+  "slug": "add-policy-validation-job-before-deployment",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #159: Add policy validation Job before Deployment rollout\n\n**Category**: feature | **Scope**: Medium\n\n**Description**: When `spec.policyOverrides` is set, add a pre-deployment validation step that runs `oslopolicy-checker` (or `oslopolicy-validator`) against the rendered `policy.yaml` inside the Keystone container image before the Deployment is updated. Implement this as a short-lived Kubernetes Job that mounts the immutable ConfigMap, executes the policy check, and gates the Deployment rollout on successful completion. Add a new `PolicyValidReady` condition to track the validation result.\n\nThe validation Job should:\n1. Use the same Keystone image as the API Deployment\n2. Mount the rendered ConfigMap (containing `policy.yaml`) read-only\n3. Run `oslopolicy-checker --config-file /etc/keystone/keystone.conf --policy /etc/keystone/policy.yaml` (or equivalent)\n4. Succeed (exit 0) if all policy rules are syntactically valid and reference known Keystone actions\n5. Fail with a descriptive error if any rule is invalid (unknown target, malformed check string, etc.)\n\nThe Deployment sub-reconciler must not proceed until `PolicyValidReady=True`. When `spec.policyOverrides` is nil, skip validation entirely and set the condition to True with reason `NotRequired`.\n\n**Motivation**: Currently, policy overrides are rendered into the ConfigMap and mounted directly into the Deployment without any pre-flight check. An invalid policy rule (e.g., a typo in an action name or a malformed check string) is only discovered at runtime when Keystone rejects API requests with HTTP 500 or unexpected 403 errors. This can cause a service outage that is difficult to diagnose. Validating policies before rollout catches configuration errors early, before they reach running pods.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_policyvalidation.go` (new file)\n- `operators/keystone/internal/controller/keystone_controller.go` (insert validation step between `reconcileConfig` and `reconcileDeployment`)\n- `operators/keystone/api/v1alpha1/keystone_types.go` (new `PolicyValidReady` condition constant)\n- `internal/common/policy/policy.go` (optional: helper for building the validator Job spec)\n\n**Acceptance Criteria**:\n- [ ] Validation Job runs only when `spec.policyOverrides` is set\n- [ ] Validation Job uses the same image, SecurityContext, and config mounts as the API Deployment\n- [ ] `PolicyValidReady` condition is False while the Job is running, True on success, False with reason on failure\n- [ ] Deployment reconciliation is gated on `PolicyValidReady=True`\n- [ ] When `spec.policyOverrides` is removed, the condition is set to True (reason `NotRequired`) and any existing validation Job is cleaned up\n- [ ] Invalid policy rules produce a clear error message in the condition (not just \"Job failed\")\n- [ ] Job has `backoffLimit: 2` and `ttlSecondsAfterFinished: 300`\n- [ ] Unit tests cover: valid policy passes, invalid policy fails with descriptive reason, no-policy skips validation\n- [ ] Integration test verifies the gating behavior (Deployment not updated until validation succeeds)\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/159",
+  "stories": [
+    {
+      "title": "Operator validates policy overrides before deployment rollout",
+      "role": "OpenStack platform operator",
+      "want": "a pre-deployment validation step that runs oslopolicy-checker against my rendered policy.yaml before the Deployment is updated",
+      "so_that": "invalid policy rules (typos, unknown actions, malformed check strings) are caught before reaching running pods, preventing runtime HTTP 500 or unexpected 403 errors",
+      "criteria": [
+        "When spec.policyOverrides is set, a validation Job named {name}-policy-validation is created before the Deployment is updated",
+        "The validation Job uses the same Keystone container image as the API Deployment",
+        "The validation Job mounts the rendered ConfigMap (containing policy.yaml) read-only at /etc/keystone/keystone.conf.d/",
+        "The validation Job runs oslopolicy-checker --namespace keystone --policy /etc/keystone/keystone.conf.d/policy.yaml",
+        "PolicyValidReady condition is set to False/PolicyValidationInProgress while the Job is running",
+        "PolicyValidReady condition is set to True/PolicyValidationPassed when the Job completes successfully (exit 0)",
+        "Deployment reconciliation does NOT proceed until PolicyValidReady=True"
+      ]
+    },
+    {
+      "title": "Operator receives descriptive error message when policy validation fails",
+      "role": "OpenStack platform operator",
+      "want": "to see a clear, specific error message in the PolicyValidReady condition when my policy overrides contain invalid rules",
+      "so_that": "I can diagnose and fix the configuration error without inspecting Job logs manually",
+      "criteria": [
+        "When the validation Job fails (exit non-zero), PolicyValidReady condition is set to False with reason PolicyValidationFailed",
+        "The condition message includes the specific validation error from oslopolicy-checker output (not just 'Job failed')",
+        "The Job has backoffLimit: 2 to retry transient failures before reporting permanent failure",
+        "The Job has ttlSecondsAfterFinished: 300 so failed Jobs are cleaned up after 5 minutes",
+        "The Deployment is NOT updated while PolicyValidReady=False"
+      ]
+    },
+    {
+      "title": "Operator deploys Keystone without policy overrides",
+      "role": "OpenStack platform operator",
+      "want": "validation to be skipped entirely when I have no policy overrides configured",
+      "so_that": "the reconciliation loop is not slowed down by unnecessary validation when no custom policies are in use",
+      "criteria": [
+        "When spec.policyOverrides is nil, no validation Job is created",
+        "PolicyValidReady condition is set to True with reason NotRequired",
+        "Deployment reconciliation proceeds immediately without waiting for any validation",
+        "No validation Job resources exist in the namespace when policyOverrides is nil"
+      ]
+    },
+    {
+      "title": "Operator removes policy overrides and existing validation Job is cleaned up",
+      "role": "OpenStack platform operator",
+      "want": "the validation Job to be deleted and the condition reset when I remove spec.policyOverrides from my CR",
+      "so_that": "stale validation Jobs do not accumulate and the Ready condition reflects the current state",
+      "criteria": [
+        "When spec.policyOverrides is removed (set to nil), any existing validation Job is deleted",
+        "PolicyValidReady condition is set to True with reason NotRequired after cleanup",
+        "Deployment reconciliation proceeds normally after policy overrides are removed",
+        "The cleanup is idempotent: removing policyOverrides when no Job exists succeeds without error"
+      ]
+    },
+    {
+      "title": "Policy validation re-runs when ConfigMap changes",
+      "role": "OpenStack platform operator",
+      "want": "the validation Job to be re-run when the rendered policy.yaml content changes (e.g., updated policy rules or image upgrade)",
+      "so_that": "policy changes are always validated before the Deployment picks them up",
+      "criteria": [
+        "When the ConfigMap changes (new content hash in name), the old completed validation Job is detected as stale via pod-spec hash comparison",
+        "The stale Job is deleted and a new validation Job is created with the updated ConfigMap reference",
+        "PolicyValidReady transitions back to False/PolicyValidationInProgress while re-validation runs",
+        "Deployment update is blocked until the re-validation completes successfully"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The system SHALL create a policy validation Job only when spec.policyOverrides is set",
+      "priority": "SHALL",
+      "rationale": "Validation is unnecessary when no custom policy rules exist, and creating unnecessary Jobs wastes cluster resources and slows reconciliation",
+      "scenarios": [
+        {
+          "name": "PolicyOverrides set triggers validation Job",
+          "when": "the Keystone CR has spec.policyOverrides with rules or configMapRef",
+          "then": "a validation Job named {name}-policy-validation is created in the same namespace",
+          "and_then": [
+            "PolicyValidReady condition is set to False with reason PolicyValidationInProgress"
+          ]
+        },
+        {
+          "name": "No policyOverrides skips validation",
+          "when": "the Keystone CR has spec.policyOverrides set to nil",
+          "then": "no validation Job is created",
+          "and_then": [
+            "PolicyValidReady condition is set to True with reason NotRequired"
+          ]
+        },
+        {
+          "name": "PolicyOverrides removed triggers cleanup",
+          "when": "spec.policyOverrides is removed from a CR that previously had it set",
+          "then": "any existing validation Job is deleted",
+          "and_then": [
+            "PolicyValidReady condition transitions to True with reason NotRequired"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The validation Job SHALL use the same container image, SecurityContext, and config ConfigMap mount as the API Deployment",
+      "priority": "SHALL",
+      "rationale": "Using the same image ensures oslopolicy-checker matches the Keystone version deployed; consistent security context maintains PSS Restricted compliance",
+      "scenarios": [
+        {
+          "name": "Image matches Deployment",
+          "when": "the validation Job is created",
+          "then": "the container image is {spec.image.repository}:{spec.image.tag}",
+          "and_then": [
+            "the image reference exactly matches what buildKeystoneDeployment uses"
+          ]
+        },
+        {
+          "name": "SecurityContext is PSS Restricted",
+          "when": "the validation Job is created",
+          "then": "the container SecurityContext uses restrictedSecurityContext()",
+          "and_then": [
+            "allowPrivilegeEscalation=false, runAsNonRoot=true, runAsUser=42424, readOnlyRootFilesystem=true, capabilities drop ALL, seccompProfile RuntimeDefault"
+          ]
+        },
+        {
+          "name": "ConfigMap mounted read-only",
+          "when": "the validation Job is created",
+          "then": "the rendered ConfigMap is mounted at /etc/keystone/keystone.conf.d/ with readOnly=true",
+          "and_then": [
+            "the volume references the immutable ConfigMap by exact name (with content-hash suffix)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The system SHALL track validation status via a PolicyValidReady condition with appropriate Status, Reason, and Message values for each lifecycle state",
+      "priority": "SHALL",
+      "rationale": "Conditions are the standard Kubernetes mechanism for tracking sub-resource readiness and are consumed by the Ready aggregation logic",
+      "scenarios": [
+        {
+          "name": "Running state",
+          "when": "the validation Job exists but has not completed or failed",
+          "then": "PolicyValidReady condition is Status=False, Reason=PolicyValidationInProgress",
+          "and_then": [
+            "Message indicates the validation job is running",
+            "ObservedGeneration matches the current CR generation"
+          ]
+        },
+        {
+          "name": "Success state",
+          "when": "the validation Job completes successfully (exit 0)",
+          "then": "PolicyValidReady condition is Status=True, Reason=PolicyValidationPassed",
+          "and_then": [
+            "Message indicates policy validation passed",
+            "ObservedGeneration matches the current CR generation"
+          ]
+        },
+        {
+          "name": "Failure state",
+          "when": "the validation Job has permanently failed (exceeded backoffLimit)",
+          "then": "PolicyValidReady condition is Status=False, Reason=PolicyValidationFailed",
+          "and_then": [
+            "Message includes the specific validation error from the checker output",
+            "ObservedGeneration matches the current CR generation"
+          ]
+        },
+        {
+          "name": "Not required state",
+          "when": "spec.policyOverrides is nil",
+          "then": "PolicyValidReady condition is Status=True, Reason=NotRequired",
+          "and_then": [
+            "Message indicates policy validation is not configured"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The Deployment sub-reconciler SHALL NOT proceed until PolicyValidReady is True",
+      "priority": "SHALL",
+      "rationale": "Gating the Deployment on validation success prevents invalid policies from reaching running pods, which is the core safety guarantee of this feature",
+      "scenarios": [
+        {
+          "name": "Validation passes before deployment",
+          "when": "reconcilePolicyValidation completes with PolicyValidReady=True",
+          "then": "reconcileDeployment proceeds normally",
+          "and_then": [
+            "the Deployment is created or updated with the validated ConfigMap"
+          ]
+        },
+        {
+          "name": "Validation blocks deployment",
+          "when": "reconcilePolicyValidation returns a non-zero Result (requeue) or error",
+          "then": "reconcileDeployment is NOT called",
+          "and_then": [
+            "the existing Deployment remains unchanged",
+            "the controller requeues for later retry"
+          ]
+        },
+        {
+          "name": "No-policy path does not block deployment",
+          "when": "reconcilePolicyValidation sets PolicyValidReady=True/NotRequired (no policyOverrides)",
+          "then": "reconcileDeployment proceeds immediately",
+          "and_then": [
+            "no validation delay is introduced"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "When spec.policyOverrides is removed, the system SHALL delete any existing validation Job and set PolicyValidReady=True with reason NotRequired",
+      "priority": "SHALL",
+      "rationale": "Stale Jobs should not linger after the feature is disabled; the condition must reflect the current desired state",
+      "scenarios": [
+        {
+          "name": "Existing Job cleaned up on removal",
+          "when": "spec.policyOverrides transitions from set to nil and a validation Job exists",
+          "then": "the existing validation Job is deleted",
+          "and_then": [
+            "PolicyValidReady=True with reason NotRequired",
+            "no error is returned"
+          ]
+        },
+        {
+          "name": "No Job to clean up on removal",
+          "when": "spec.policyOverrides transitions from set to nil and no validation Job exists",
+          "then": "the delete operation is a no-op (no error)",
+          "and_then": [
+            "PolicyValidReady=True with reason NotRequired"
+          ]
+        },
+        {
+          "name": "Cleanup is idempotent",
+          "when": "reconcilePolicyValidation is called repeatedly with policyOverrides=nil",
+          "then": "each call sets PolicyValidReady=True/NotRequired without error",
+          "and_then": [
+            "no spurious Job creation or deletion attempts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "When validation fails, the PolicyValidReady condition message SHALL include the specific error output from oslopolicy-checker, not a generic failure message",
+      "priority": "SHALL",
+      "rationale": "Generic 'Job failed' messages force operators to manually inspect logs; descriptive messages enable immediate diagnosis",
+      "scenarios": [
+        {
+          "name": "Unknown action name in error message",
+          "when": "the policy file contains a rule referencing a non-existent Keystone action",
+          "then": "the condition message includes the error output describing the unknown action",
+          "and_then": [
+            "the operator can identify the invalid rule without checking logs"
+          ]
+        },
+        {
+          "name": "Malformed check string in error message",
+          "when": "the policy file contains a rule with invalid check syntax",
+          "then": "the condition message includes the error output describing the syntax error",
+          "and_then": [
+            "the error message is truncated if it exceeds reasonable length for a condition message"
+          ]
+        },
+        {
+          "name": "Fallback when termination message unavailable",
+          "when": "the validation Job fails but the Pod termination message is empty or unavailable",
+          "then": "the condition message falls back to a message referencing the Job name for manual log inspection",
+          "and_then": [
+            "the message includes the Job name and namespace for easy kubectl access"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The validation Job SHALL have backoffLimit=2 and ttlSecondsAfterFinished=300",
+      "priority": "SHALL",
+      "rationale": "backoffLimit=2 allows retrying transient failures (e.g., image pull backoff) while failing fast for policy errors; TTL=300 cleans up completed Jobs after 5 minutes",
+      "scenarios": [
+        {
+          "name": "BackoffLimit allows retries",
+          "when": "the validation Job is created",
+          "then": "spec.backoffLimit is set to 2",
+          "and_then": [
+            "the Job is retried up to 2 times before being marked as permanently failed"
+          ]
+        },
+        {
+          "name": "TTL cleans up completed Jobs",
+          "when": "the validation Job completes (either success or failure)",
+          "then": "spec.ttlSecondsAfterFinished is set to 300",
+          "and_then": [
+            "the Job and its Pods are garbage-collected 5 minutes after completion"
+          ]
+        },
+        {
+          "name": "RestartPolicy is Never",
+          "when": "the validation Job is created",
+          "then": "the pod template spec.restartPolicy is Never",
+          "and_then": [
+            "failed pods are not restarted by the kubelet, only by the Job controller creating new pods"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "PolicyValidReady SHALL be included in the subConditionTypes list for Ready aggregation",
+      "priority": "SHALL",
+      "rationale": "The aggregate Ready condition must reflect all sub-conditions including policy validation; omitting it would cause Ready=True even when validation is failing",
+      "scenarios": [
+        {
+          "name": "PolicyValidReady affects Ready aggregation",
+          "when": "PolicyValidReady is False and all other sub-conditions are True",
+          "then": "the aggregate Ready condition is False with reason NotAllReady",
+          "and_then": [
+            "the Keystone CR status shows Ready=False"
+          ]
+        },
+        {
+          "name": "All conditions True produces Ready=True",
+          "when": "PolicyValidReady is True and all other sub-conditions are True",
+          "then": "the aggregate Ready condition is True with reason AllReady",
+          "and_then": [
+            "the Keystone CR status shows Ready=True"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The system SHALL detect stale completed validation Jobs when the ConfigMap changes and re-run validation",
+      "priority": "SHALL",
+      "rationale": "Policy content changes (rule updates, image upgrades) require re-validation; without stale detection, old validation results would gate deployments with outdated checks",
+      "scenarios": [
+        {
+          "name": "ConfigMap change triggers re-validation",
+          "when": "the rendered ConfigMap name changes (new content hash) and a completed validation Job exists with a different pod-spec hash",
+          "then": "the old validation Job is deleted and a new Job is created with the updated ConfigMap reference",
+          "and_then": [
+            "PolicyValidReady transitions to False/PolicyValidationInProgress"
+          ]
+        },
+        {
+          "name": "Unchanged ConfigMap preserves completed state",
+          "when": "the ConfigMap has not changed and a completed validation Job exists with a matching pod-spec hash",
+          "then": "the existing completed Job is retained (no deletion or recreation)",
+          "and_then": [
+            "PolicyValidReady remains True/PolicyValidationPassed"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add PolicyValidReady to subConditionTypes and RequeueValidationWait interval (CC-0058, REQ-008)",
+      "description": "Add 'PolicyValidReady' to the subConditionTypes slice in operators/keystone/internal/controller/keystone_controller.go (between 'NetworkPolicyReady' and 'DeploymentReady' since it runs between those sub-reconcilers). Add RequeueValidationWait = 15 * time.Second to operators/keystone/internal/controller/requeue_intervals.go with a doc comment explaining policy validation jobs are fast (syntax check only). Verify existing tests still pass since this changes the Ready aggregation input set.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Create reconcilePolicyValidation sub-reconciler with all lifecycle paths and unit tests (CC-0058, REQ-001, REQ-002, REQ-003, REQ-005, REQ-007, REQ-009)",
+      "description": "Create new file operators/keystone/internal/controller/reconcile_policyvalidation.go with: (1) reconcilePolicyValidation(ctx, keystone, configMapName) function following the sub-reconciler contract (returns ctrl.Result, error). Three paths: (a) policyOverrides nil → delete any existing Job via deleteValidationJob(), set PolicyValidReady=True/NotRequired; (b) Job not found or stale → call job.RunJob() with buildPolicyValidationJob(), requeue if running; (c) Job complete → set PolicyValidReady=True/PolicyValidationPassed; Job failed → set PolicyValidReady=False/PolicyValidationFailed. (2) buildPolicyValidationJob(keystone, configMapName) that builds a batchv1.Job with: name={name}-policy-validation, image=spec.Image, securityContext=restrictedSecurityContext(), command=[oslopolicy-checker --namespace keystone --policy /etc/keystone/keystone.conf.d/policy.yaml], backoffLimit=2, ttlSecondsAfterFinished=300, restartPolicy=Never, config ConfigMap volume mounted read-only at /etc/keystone/keystone.conf.d/. (3) deleteValidationJob(ctx, c, namespace, name) helper using client.IgnoreNotFound(c.Delete()). Create test file operators/keystone/internal/controller/reconcile_policyvalidation_test.go following the reconcile_bootstrap_test.go pattern: test scheme builder, Keystone CR fixture, reconciler factory, Job state helpers (completed/failed/running), and test cases for: skip path (no policyOverrides), Job creation, Job running (requeue), Job complete (condition True), Job failed (condition False with error), stale Job detection, cleanup on removal, Job builder spec (image, security context, command, backoff, TTL, mounts, termination message policy), observed generation on all conditions.",
+      "level": 2,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Add descriptive error extraction from failed validation Job pods (CC-0058, REQ-006)",
+      "description": "Enhance reconcilePolicyValidation in operators/keystone/internal/controller/reconcile_policyvalidation.go to extract descriptive error messages from failed validation Jobs. (1) In buildPolicyValidationJob, set container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError so the kubelet captures the last ~4KB of oslopolicy-checker output. (2) Add a getValidationErrorMessage(ctx, c, jobName, namespace) helper that: lists Pods with label job-name={jobName}, finds the most recent failed pod, reads containerStatuses[0].state.terminated.message, and returns a truncated version (max ~500 chars) suitable for a condition message. (3) When job.RunJob returns ErrJobFailed, call getValidationErrorMessage and include the result in the PolicyValidReady condition message. If the termination message is empty, fall back to 'Policy validation failed; check Job {name} logs: kubectl logs -n {ns} job/{name}'. Update unit tests: add test for descriptive error with termination message, test for fallback message when termination message unavailable.",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Insert reconcilePolicyValidation into reconciliation order between NetworkPolicy and Deployment (CC-0058, REQ-004)",
+      "description": "Update operators/keystone/internal/controller/keystone_controller.go Reconcile() method to call r.reconcilePolicyValidation(ctx, &keystone, configMapName) between reconcileNetworkPolicy and reconcileDeployment. Add a comment explaining that policy validation must complete before deployment to prevent invalid policies from reaching pods. Follow the existing early-exit pattern: 'if result, err := r.reconcilePolicyValidation(ctx, &keystone, configMapName); !result.IsZero() || err != nil { return r.updateStatus(ctx, &keystone, result, err) }'. This naturally gates reconcileDeployment on PolicyValidReady=True because the sub-reconciler returns a non-zero Result when validation is not yet complete. No changes needed to reconcileDeployment itself.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Add integration tests for policy validation gating behavior (CC-0058, REQ-004, REQ-008)",
+      "description": "Add integration tests to operators/keystone/internal/controller/integration_test.go following the existing envtest pattern. (1) TestIntegration_PolicyValidation_GatesDeployment: Create a Keystone CR with policyOverrides.rules set. Assert that PolicyValidReady=False/PolicyValidationInProgress appears on the status and a validation Job exists. Simulate Job completion by patching Job status. Assert that Deployment is eventually created and PolicyValidReady=True. (2) TestIntegration_PolicyValidation_NoPolicyDoesNotBlock: Create a Keystone CR without policyOverrides. Assert PolicyValidReady=True/NotRequired and Deployment proceeds normally. (3) TestIntegration_PolicyValidation_ReadyAggregation: Verify that when PolicyValidReady=False, the aggregate Ready condition is also False, even if all other sub-conditions are True. Use existing test helpers (setupEnvTestWithController, simulators for MariaDB/ESO/Memcached).",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Update keystone-reconciler.md with PolicyValidation sub-reconciler documentation (CC-0058)",
+      "description": "Update docs/reference/keystone-reconciler.md to document the new reconcilePolicyValidation sub-reconciler. Add: (1) Entry in the reconciliation order table/flow showing PolicyValidation between NetworkPolicy and Deployment. (2) Sub-reconciler contract section describing the three lifecycle paths (skip, validate, cleanup), condition types/reasons, and requeue behavior. (3) Update the subConditionTypes list to include PolicyValidReady. (4) Update the feature references in the frontmatter to include CC-0058. Follow the existing documentation style and level of detail used for other sub-reconcilers in the same file.",
+      "level": 4,
+      "estimate_minutes": 15
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation",
+      "story": "Operator deploys Keystone without policy overrides",
+      "expected": "When policyOverrides is nil, no Job is created and PolicyValidReady=True with reason NotRequired",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicySet_JobCreated",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "When policyOverrides is set and no Job exists, a validation Job is created and PolicyValidReady=False/PolicyValidationInProgress with requeue",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp",
+      "story": "Operator removes policy overrides and existing validation Job is cleaned up",
+      "expected": "When policyOverrides is nil and a validation Job exists, the Job is deleted and PolicyValidReady=True/NotRequired",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError",
+      "story": "Operator removes policy overrides and existing validation Job is cleaned up",
+      "expected": "When policyOverrides is nil and no validation Job exists, no error occurs and PolicyValidReady=True/NotRequired",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_ImageMatchesDeployment",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "The validation Job container image is {spec.image.repository}:{spec.image.tag}, matching the API Deployment",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_SecurityContext",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "The validator container SecurityContext satisfies PSS Restricted profile (using expectRestrictedSecurityContext helper)",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_ConfigMapMount",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "The ConfigMap is mounted at /etc/keystone/keystone.conf.d/ with readOnly=true and the volume references the ConfigMap by exact name",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_BackoffAndTTL",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "backoffLimit=2, ttlSecondsAfterFinished=300, restartPolicy=Never",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobRunning_Requeues",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "When the validation Job exists but is still running, result has RequeueAfter=RequeueValidationWait and PolicyValidReady=False/PolicyValidationInProgress",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobComplete_ConditionTrue",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "When the validation Job completes successfully, PolicyValidReady=True/PolicyValidationPassed with ObservedGeneration matching CR generation",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_ConditionFalse",
+      "story": "Operator receives descriptive error message when policy validation fails",
+      "expected": "When the validation Job fails, PolicyValidReady=False/PolicyValidationFailed and error is returned wrapping job.ErrJobFailed",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated",
+      "story": "Policy validation re-runs when ConfigMap changes",
+      "expected": "When a completed Job has a different pod-spec hash (e.g., ConfigMap name changed), the old Job is deleted and a new one is created",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_Command",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "The container command runs oslopolicy-checker with --namespace keystone and --policy pointing to the policy.yaml in the ConfigMap mount",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage",
+      "story": "Operator receives descriptive error message when policy validation fails",
+      "expected": "The condition message includes validation error details extracted from the failed Pod's termination message, not just 'Job failed'",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_JobFailed_FallbackMessage",
+      "story": "Operator receives descriptive error message when policy validation fails",
+      "expected": "When the termination message is unavailable, the condition message falls back to referencing the Job name for manual log inspection",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestReconcilePolicyValidation_ConditionObservedGeneration",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "All condition updates include ObservedGeneration matching the Keystone CR's current generation",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_policyvalidation_test.go",
+      "test_function": "TestBuildPolicyValidationJob_TerminationMessagePolicy",
+      "story": "Operator receives descriptive error message when policy validation fails",
+      "expected": "The container has terminationMessagePolicy=FallbackToLogsOnError set",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_GatesDeployment",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "With policyOverrides set, the Deployment is not created/updated until the validation Job completes. Simulated by creating the Job in completed state and verifying Deployment proceeds.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_NoPolicyDoesNotBlock",
+      "story": "Operator deploys Keystone without policy overrides",
+      "expected": "With policyOverrides nil, the Deployment proceeds without any validation Job. PolicyValidReady=True/NotRequired in final status.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestIntegration_PolicyValidation_ReadyAggregation",
+      "story": "Operator validates policy overrides before deployment rollout",
+      "expected": "PolicyValidReady=False prevents Ready=True even when all other sub-conditions are True. Ready=True only when PolicyValidReady=True.",
+      "requirement_id": "REQ-008"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All unit tests pass: go test ./operators/keystone/internal/controller/... covers skip path, Job creation, running/complete/fail states, stale detection, cleanup, Job spec validation, error message extraction",
+    "Integration tests pass: go test -tags=integration ./operators/keystone/internal/controller/... verifies gating behavior, Ready aggregation, and no-policy path",
+    "PolicyValidReady is included in subConditionTypes between NetworkPolicyReady and DeploymentReady",
+    "Validation Job spec matches Deployment: same image (spec.image), restrictedSecurityContext(), config ConfigMap mount at /etc/keystone/keystone.conf.d/ read-only",
+    "Deployment is gated on PolicyValidReady=True via the early-exit pattern in the reconciliation loop",
+    "Failed validation produces descriptive error message from Pod termination message, not just 'Job failed'",
+    "Job has backoffLimit=2, ttlSecondsAfterFinished=300, restartPolicy=Never per spec",
+    "Stale completed Jobs are detected via pod-spec hash comparison (using job.RunJob built-in mechanism) and re-created",
+    "Cleanup when policyOverrides removed: existing Job deleted, condition set to True/NotRequired",
+    "Code passes golangci-lint and go vet without errors",
+    "SecurityContext on validator container satisfies PSS Restricted profile (verified by expectRestrictedSecurityContext test helper)",
+    "All condition updates include ObservedGeneration matching the current CR generation"
+  ],
+  "implementation_notes": "## Architecture\n\nThis feature adds a new sub-reconciler `reconcilePolicyValidation` to the Keystone reconciliation chain, inserted between `reconcileNetworkPolicy` and `reconcileDeployment`. The gating mechanism is implicit: the existing early-exit pattern (`if !result.IsZero() || err != nil { return }`) in the Reconcile() loop prevents downstream sub-reconcilers from running when an upstream one returns a non-zero Result.\n\n## Data Flow\n\n```\nKeystoneSpec.PolicyOverrides (CRD input)\n    │\n    ▼\nreconcileConfig() → Immutable ConfigMap with policy.yaml + keystone.conf\n    │\n    ▼\nreconcilePolicyValidation()\n    ├── policyOverrides == nil → delete Job, set PolicyValidReady=True/NotRequired\n    └── policyOverrides != nil → build & run validation Job\n         │\n         ▼\n    Validation Job (oslopolicy-checker)\n         │\n         ├── exit 0 → PolicyValidReady=True/PolicyValidationPassed\n         └── exit !0 → PolicyValidReady=False/PolicyValidationFailed\n              │\n              ▼\nreconcileDeployment() → Only called when PolicyValidReady=True\n```\n\n## Component Diagram\n\n```\n┌─────────────────────────────────────────────────────────────────┐\n│                   Keystone Reconciler                           │\n│                                                                 │\n│  ...reconcileNetworkPolicy →                                    │\n│                                                                 │\n│  ┌───────────────────────────────────────────────────────────┐  │\n│  │ reconcilePolicyValidation (NEW - CC-0058)                 │  │\n│  │                                                           │  │\n│  │  Path 1 (nil): delete Job → condition=True/NotRequired    │  │\n│  │  Path 2 (set): job.RunJob() → track lifecycle             │  │\n│  │       ┌──────────────────────────────────────┐            │  │\n│  │       │ {name}-policy-validation Job          │            │  │\n│  │       │ Image: spec.image                     │            │  │\n│  │       │ Mount: ConfigMap @ /etc/keystone/...  │            │  │\n│  │       │ Cmd: oslopolicy-checker               │            │  │\n│  │       │ BackoffLimit: 2, TTL: 300             │            │  │\n│  │       └──────────────────────────────────────┘            │  │\n│  └───────────────────────────────────────────────────────────┘  │\n│                                                                 │\n│  ...reconcileDeployment (gated on PolicyValidReady=True) →      │\n└─────────────────────────────────────────────────────────────────┘\n```\n\n## Key Patterns to Follow\n\n- **Sub-reconciler contract**: Follow reconcile_bootstrap.go signature and condition-setting pattern (conditions.SetCondition with Type, Status, ObservedGeneration, Reason, Message)\n- **Job lifecycle**: Use job.RunJob() from internal/common/job/job.go for idempotent Job creation, stale detection via pod-spec hash, and completion/failure checking\n- **Cleanup pattern**: Follow deleteNetworkPolicy/DeleteHPA pattern using client.IgnoreNotFound(c.Delete())\n- **Security context**: Use restrictedSecurityContext() helper for PSS Restricted compliance\n- **Test convention**: Follow reconcile_bootstrap_test.go pattern — scheme builder, CR fixture, reconciler factory, Job state helpers, Gomega assertions\n- **Requeue interval**: Add RequeueValidationWait to requeue_intervals.go following existing constant pattern\n\n## Key Files\n\n- `operators/keystone/internal/controller/reconcile_bootstrap.go` — Primary pattern reference for Job-based sub-reconciler\n- `operators/keystone/internal/controller/reconcile_bootstrap_test.go` — Test pattern reference\n- `operators/keystone/internal/controller/keystone_controller.go` — Reconciliation order and subConditionTypes\n- `internal/common/job/job.go` — RunJob(), PodSpecHash(), ErrJobFailed\n- `operators/keystone/internal/controller/security_context.go` — restrictedSecurityContext()\n- `operators/keystone/internal/controller/requeue_intervals.go` — Requeue interval constants\n- `operators/keystone/internal/controller/reconcile_hpa.go` — Pattern for optional feature (create/delete based on spec nil check)\n\n## Potential Pitfalls\n\n1. **Config mount path**: The ConfigMap is mounted at `/etc/keystone/keystone.conf.d/` (directory mount), not individual file mounts. The oslopolicy-checker command must reference `/etc/keystone/keystone.conf.d/policy.yaml`, not `/etc/keystone/policy.yaml`.\n2. **oslopolicy-checker availability**: The tool must be installed in the Keystone container image. It's part of the oslo.policy Python package which Keystone depends on, so it should be available. If not, the Job will fail with a command-not-found error.\n3. **Pod log reading for error extraction**: Listing Pods by job-name label requires the controller to have list/get permissions on Pods. Check existing RBAC markers — the current markers do NOT include Pod read permissions. However, we need Pods only for error message extraction; the core functionality works without it. If Pod RBAC is not available, the fallback message is used.\n4. **RBAC for Pod listing**: The existing RBAC markers in keystone_controller.go do not include `pods` resources. For REQ-006 (descriptive error messages), we need to add `+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list` to read Pod termination messages. This is a new RBAC requirement.\n5. **Stale Job detection**: job.RunJob() handles stale detection automatically via PodSpecHash annotation comparison. No custom logic needed — when the ConfigMap name changes, the Job spec changes (different volume reference), which changes the PodSpec hash.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-10T15:13:55.292001"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-10T15:13:55.638617"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-10T15:24:58.706916"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "6444fedd-833d-44d9-bef7-986c3a1061c4",
+      "timestamp": "2026-04-10T15:24:58.706942",
+      "total_duration": 659.3956451416016,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 659.3956451416016,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
