@@ -41,6 +41,7 @@ var subConditionTypes = []string{
 	"HPAReady",
 	"NetworkPolicyReady",
 	"BootstrapReady",
+	"TrustFlushReady",
 }
 
 // KeystoneReconciler reconciles a Keystone object.
@@ -119,6 +120,10 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if result, err := r.reconcileBootstrap(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &keystone, result, err)
+	}
+
+	if result, err := r.reconcileTrustFlush(ctx, &keystone, configMapName); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &keystone, result, err)
 	}
 
