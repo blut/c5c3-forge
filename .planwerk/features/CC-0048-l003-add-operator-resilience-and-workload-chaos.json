@@ -1,0 +1,558 @@
+{
+  "feature_id": "CC-0048",
+  "title": "L003: Add operator resilience and workload chaos tests",
+  "slug": "l003-add-operator-resilience-and-workload-chaos",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "**Size:** 📦 medium\n**Category:** testing\n**Priority:** high\n**Source:** Proposed for '# GitHub Issue #132: Add negative and chaos E2E te'\n\nImplement the 3 scenarios that test operator self-recovery, CronJob failure handling, and PDB enforcement.\n\n**Scenarios:**\n1. **SC-CHAOS-004: `tests/e2e-chaos/operator-pod-crash/`** — PodChaos kills operator pod mid-reconcile → verify controller-runtime restarts the pod → assert re-reconciliation drives back to `Ready=True` (validates no unrecoverable state from partial reconciliation)\n2. **SC-CHAOS-005: `tests/e2e-chaos/cronjob-rotation-failure/`** — PodChaos with pod-failure action targets CronJob-spawned pods → verify failed Job is detected → assert operator status reflects the failure condition (validates `stale-completed-job-detection-via-pod-template-spec-comparison` pattern behavior under fault)\n3. **SC-CHAOS-008: `tests/e2e-chaos/api-pod-kill-pdb/`** — PodChaos targets Keystone API pods → assert PDB prevents simultaneous termination of all replicas → verify at least one pod remains running throughout the disruption\n\nEach test follows the established framework from L002: SPDX headers, CC-0048 references, numbered steps, catch blocks with diagnostics, JMESPath condition assertions per `chainsaw-e2e-test-suite-structure` pattern.\n\n**Rationale:** These scenarios cover operator-level resilience (crash recovery without entering unrecoverable state), workload correctness (CronJob failure detection), and availability guarantees (PDB enforcement). They are distinct from dependency pod kills because they test the operator's own lifecycle and Kubernetes workload management, not external dependency health.\n\n**Affected Areas:**\n- tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml\n- tests/e2e-chaos/operator-pod-crash/00-keystone-cr.yaml\n- tests/e2e-chaos/operator-pod-crash/01-podchaos.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/00-keystone-cr.yaml\n- tests/e2e-chaos/cronjob-rotation-failure/01-podchaos.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/00-keystone-cr.yaml\n- tests/e2e-chaos/api-pod-kill-pdb/01-podchaos.yaml",
+  "stories": [
+    {
+      "title": "Operator pod crash recovery validation",
+      "role": "operator developer",
+      "want": "a chaos test that kills the operator pod mid-reconcile and verifies full recovery",
+      "so_that": "I can trust partial reconciliation never leaves the Keystone CR in an unrecoverable state",
+      "criteria": [
+        "PodChaos kill-operator targets app.kubernetes.io/name=keystone-operator with pod-kill action in openstack namespace",
+        "Condition-based wait confirms operator pod transitions Ready=false then Ready=true after kill",
+        "Final assertion verifies Keystone CR Ready=True with reason AllReady after re-reconciliation",
+        "Catch blocks call diagnostics.sh chaos with --dep-label=app.kubernetes.io/name=keystone-operator"
+      ]
+    },
+    {
+      "title": "CronJob rotation failure resilience validation",
+      "role": "operator developer",
+      "want": "a chaos test that injects failures into CronJob-spawned fernet rotation pods",
+      "so_that": "I can verify the operator remains healthy when background workloads fail",
+      "criteria": [
+        "Script step creates a manual Job named chaos-cron-test from the fernet-rotate CronJob via kubectl create job --from",
+        "PodChaos fail-cronjob targets job pods (label job-name=chaos-cron-test) with pod-failure action and 60s duration",
+        "FernetKeysReady=True and Ready=True with reason AllReady are asserted during active fault injection",
+        "Catch blocks include CronJob status, Job status, job pod logs, and operator diagnostics via diagnostics.sh"
+      ]
+    },
+    {
+      "title": "PDB enforcement during API pod disruption",
+      "role": "operator developer",
+      "want": "a chaos test that kills a Keystone API pod in a multi-replica deployment and verifies PDB enforcement",
+      "so_that": "I can trust at least one API pod remains available during pod disruptions",
+      "criteria": [
+        "Keystone CR uses replicas: 3 to trigger minAvailable=1 PDB configuration via buildPodDisruptionBudget()",
+        "Explicit PDB assertion verifies PodDisruptionBudget keystone-chaos-api-api has spec.minAvailable: 1",
+        "Script step verifies Deployment keystone-chaos-api-api has availableReplicas >= 1 during disruption",
+        "DeploymentReady=True and Ready=True with reason AllReady maintained throughout pod kill and replacement"
+      ]
+    },
+    {
+      "title": "New chaos scenarios integrate with existing CI framework",
+      "role": "CI pipeline operator",
+      "want": "the 3 new chaos scenarios to follow the established L002 framework conventions",
+      "so_that": "they run automatically in the existing e2e-chaos job without CI workflow or Makefile changes",
+      "criteria": [
+        "All 9 new files include SPDX Apache-2.0 headers (lines 1-3) matching existing L002 test files",
+        "All chainsaw-test.yaml files reference CC-0048 and their scenario ID in header comment block",
+        "Test metadata names follow keystone-<scenario> convention (e.g. keystone-operator-pod-crash)",
+        "Directory names follow kebab-case: operator-pod-crash/, cronjob-rotation-failure/, api-pod-kill-pdb/"
+      ]
+    },
+    {
+      "title": "Diagnostic output enables failure investigation from CI logs",
+      "role": "developer debugging a chaos test failure",
+      "want": "comprehensive diagnostic catch blocks on every assert step",
+      "so_that": "CI logs contain enough information to identify root cause without manual cluster access",
+      "criteria": [
+        "Every assert step in all 3 tests has a catch block with diagnostics.sh or inline kubectl commands",
+        "Baseline assert steps call diagnostics.sh baseline with CR name",
+        "Chaos/recovery assert steps call diagnostics.sh chaos with appropriate --dep-label and --log-label flags",
+        "SC-CHAOS-005 catch blocks additionally collect CronJob/Job status and job pod logs"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The operator SHALL recover to Ready=True after its pod is killed, with controller-runtime restarting the pod and re-reconciliation completing all sub-reconcilers without errors (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "Operator pod crashes during reconciliation (OOM, node failure) must not leave the Keystone CR in a wedged state. Controller-runtime restart plus idempotent sub-reconcilers guarantee recovery.",
+      "scenarios": [
+        {
+          "name": "Operator pod restart after kill",
+          "when": "PodChaos kills the operator pod with pod-kill action targeting app.kubernetes.io/name=keystone-operator",
+          "then": "the Deployment controller creates a replacement pod that reaches Ready=true within 2 minutes",
+          "and_then": [
+            "operator pod Ready=true confirmed via condition-based wait"
+          ]
+        },
+        {
+          "name": "Re-reconciliation drives Ready=True",
+          "when": "the replacement operator pod starts and re-runs the full reconciliation chain",
+          "then": "Ready=True with reason AllReady is asserted on the Keystone CR",
+          "and_then": [
+            "no sub-condition is stuck in False state after recovery"
+          ]
+        },
+        {
+          "name": "No unrecoverable state from partial reconciliation",
+          "when": "the operator is killed at an arbitrary point in the sequential sub-reconciler chain",
+          "then": "the next reconciliation cycle re-runs all sub-reconcilers successfully because they use CreateOrUpdate and existence checks",
+          "and_then": [
+            "the operator does not crash-loop or emit persistent error conditions"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The operator SHALL maintain FernetKeysReady=True and Ready=True when CronJob-spawned fernet rotation pods fail, because the condition reflects Secret and CronJob existence not individual Job run status (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "CronJob pods may fail due to transient issues. reconcileFernetKeys() sets FernetKeysReady=True after ensuring Secret + CronJob exist via EnsureCronJob(). It does not monitor individual Job runs. The stale-completed-job-detection pattern handles spec drift separately via RunJob().",
+      "scenarios": [
+        {
+          "name": "FernetKeysReady stable during job pod failure",
+          "when": "PodChaos with pod-failure action (60s duration) targets pods of a manually-triggered fernet rotation Job",
+          "then": "FernetKeysReady remains True because the fernet keys Secret exists and the CronJob is correctly configured",
+          "and_then": [
+            "no sub-condition transitions to False"
+          ]
+        },
+        {
+          "name": "Ready=True stable during job pod failure",
+          "when": "CronJob-spawned pods are in a failed state due to pod-failure injection",
+          "then": "Ready=True with reason AllReady is maintained on the Keystone CR",
+          "and_then": [
+            "no degradation cascade from CronJob failure to operator health"
+          ]
+        },
+        {
+          "name": "Operator stable after fault removal",
+          "when": "PodChaos is deleted and the operator re-reconciles",
+          "then": "Ready=True with reason AllReady is maintained",
+          "and_then": [
+            "the CronJob remains correctly configured for future scheduled runs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The operator SHALL create a PodDisruptionBudget with minAvailable=1 when spec.replicas > 1, and the chaos test SHALL assert this PDB configuration exists (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "PDB with minAvailable=1 prevents cluster operations (node drains, upgrades) from simultaneously evicting all API pods. buildPodDisruptionBudget() in reconcile_deployment.go:266-289 implements this logic. The chaos test validates the configuration under multi-replica conditions.",
+      "scenarios": [
+        {
+          "name": "PDB created with minAvailable=1 for replicas=3",
+          "when": "a Keystone CR is deployed with replicas: 3",
+          "then": "a PodDisruptionBudget named keystone-chaos-api-api is created with spec.minAvailable: 1",
+          "and_then": [
+            "PDB selector matches selectorLabels: app.kubernetes.io/name=keystone, app.kubernetes.io/instance=keystone-chaos-api"
+          ]
+        },
+        {
+          "name": "PDB uses minAvailable not maxUnavailable",
+          "when": "the Keystone CR has replicas > 1",
+          "then": "the PDB uses minAvailable=1 (not maxUnavailable) to guarantee a floor of available pods",
+          "and_then": [
+            "this matches the if-branch in buildPodDisruptionBudget() for replicas > 1"
+          ]
+        },
+        {
+          "name": "PDB coexists with PodChaos disruption",
+          "when": "PodChaos kills one API pod with the PDB active",
+          "then": "the PDB remains correctly configured and does not block pod replacement",
+          "and_then": [
+            "the Deployment controller creates a replacement pod"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The Keystone API Deployment SHALL maintain DeploymentReady=True and at least one available replica when a single pod is killed in a 3-replica deployment (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "API availability is critical for OpenStack control plane. With 3 replicas, losing 1 pod leaves 2 available. The Deployment's availableReplicas never drops to 0, so DeploymentReady stays True in reconcileDeployment().",
+      "scenarios": [
+        {
+          "name": "DeploymentReady=True maintained during single pod kill",
+          "when": "PodChaos kills one of 3 Keystone API pods (mode: one)",
+          "then": "DeploymentReady condition remains True because availableReplicas >= 1",
+          "and_then": [
+            "Ready=True with reason AllReady is maintained"
+          ]
+        },
+        {
+          "name": "Available replicas >= 1 during disruption",
+          "when": "one API pod is killed and the replacement is being created",
+          "then": "the Deployment status shows availableReplicas >= 1 (surviving pods)",
+          "and_then": [
+            "verified via script step checking Deployment status"
+          ]
+        },
+        {
+          "name": "Full replica count restored after recovery",
+          "when": "the Deployment controller creates a replacement pod",
+          "then": "readyReplicas returns to 3",
+          "and_then": [
+            "Ready=True with reason AllReady confirmed in final assertion"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "After operator pod restart, the reconciliation loop SHALL re-run all sub-reconcilers to completion with each sub-reconciler passing idempotent checks without error (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "The sequential chain in keystone_controller.go:84-131 (secrets → config → fernet → credential → database → networkpolicy → deployment → hpa → bootstrap → trustflush) must handle partial prior progress. Each sub-reconciler uses CreateOrUpdate or existence checks.",
+      "scenarios": [
+        {
+          "name": "All sub-conditions True after restart",
+          "when": "the operator pod restarts and re-runs the full reconciliation chain",
+          "then": "all 9 sub-conditions (SecretsReady, FernetKeysReady, CredentialKeysReady, DatabaseReady, DeploymentReady, HPAReady, NetworkPolicyReady, BootstrapReady, TrustFlushReady) return to True",
+          "and_then": [
+            "Ready=True with reason AllReady set by setReadyCondition()"
+          ]
+        },
+        {
+          "name": "Idempotent resource creation succeeds",
+          "when": "sub-reconcilers re-process already-created resources (Secrets, ConfigMaps, Deployments, Jobs)",
+          "then": "CreateOrUpdate operations succeed without conflict errors",
+          "and_then": [
+            "no requeue-with-error paths triggered"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "Every assert step in each chaos test SHALL include a catch block calling diagnostics.sh with scenario-appropriate mode and label flags (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "Chaos test failures in CI are harder to reproduce than happy-path failures. The diagnostics.sh helper (tests/e2e-chaos/diagnostics.sh) collects CR status, pod status, Chaos Mesh status, logs with --previous, and events.",
+      "scenarios": [
+        {
+          "name": "Baseline assert has catch block",
+          "when": "the baseline Ready=True assertion fails (Step 2 in all tests)",
+          "then": "diagnostics.sh baseline is called with the scenario CR name",
+          "and_then": [
+            "output includes Keystone CR status, all pod logs, events"
+          ]
+        },
+        {
+          "name": "Chaos/recovery assert has catch block with labels",
+          "when": "a chaos or recovery assertion fails",
+          "then": "diagnostics.sh chaos is called with --dep-label and --log-label flags appropriate for the scenario target",
+          "and_then": [
+            "output includes dependency pod status, Chaos Mesh experiment status, pod logs with --previous"
+          ]
+        },
+        {
+          "name": "SC-CHAOS-005 catch includes Job diagnostics",
+          "when": "SC-CHAOS-005 assertions fail",
+          "then": "catch blocks collect CronJob status, Job status, and job pod logs in addition to standard diagnostics",
+          "and_then": [
+            "operator logs collected via --log-label=app.kubernetes.io/name=keystone-operator"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "Each chaos test scenario SHALL use a unique Keystone CR name and database name to prevent resource conflicts between serial test runs (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "Chaos tests run serially (parallel: 1) in the shared openstack namespace. Unique names prevent conflicts between L003 scenarios and with L002 tests (keystone-chaos-db, keystone-chaos-mc, keystone-chaos-bao).",
+      "scenarios": [
+        {
+          "name": "SC-CHAOS-004 uses keystone-chaos-op",
+          "when": "the SC-CHAOS-004 test creates its Keystone CR",
+          "then": "CR name is keystone-chaos-op and database name is keystone_chaos_op",
+          "and_then": [
+            "no collision with existing L002 names"
+          ]
+        },
+        {
+          "name": "SC-CHAOS-005 uses keystone-chaos-cron",
+          "when": "the SC-CHAOS-005 test creates its Keystone CR",
+          "then": "CR name is keystone-chaos-cron and database name is keystone_chaos_cron",
+          "and_then": [
+            "no collision with L002 or other L003 names"
+          ]
+        },
+        {
+          "name": "SC-CHAOS-008 uses keystone-chaos-api",
+          "when": "the SC-CHAOS-008 test creates its Keystone CR",
+          "then": "CR name is keystone-chaos-api and database name is keystone_chaos_api",
+          "and_then": [
+            "no collision with L002 or other L003 names"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "All chaos test files SHALL include SPDX Apache-2.0 headers, CC-0048 feature ID references, numbered step comments, and JMESPath condition assertions per the chainsaw-e2e-test-suite-structure pattern (CC-0048)",
+      "priority": "SHALL",
+      "rationale": "Framework compliance ensures tests are traceable to CC-0048, follow L002 conventions established in CC-0047, and are maintainable. Pattern documented in .planwerk/patterns/chainsaw-e2e-test-suite-structure-with-jmespath-condition-assertions.md.",
+      "scenarios": [
+        {
+          "name": "SPDX headers present on all 9 files",
+          "when": "any new file in tests/e2e-chaos/{operator-pod-crash,cronjob-rotation-failure,api-pod-kill-pdb}/ is reviewed",
+          "then": "lines 1-3 contain SPDX-FileCopyrightText: Copyright 2026 SAP SE and SPDX-License-Identifier: Apache-2.0",
+          "and_then": [
+            "matches the exact header pattern from tests/e2e-chaos/mariadb-pod-kill/ files"
+          ]
+        },
+        {
+          "name": "CC-0048 referenced in test and fixture headers",
+          "when": "a chainsaw-test.yaml or fixture file header comment is reviewed",
+          "then": "the comment block includes (CC-0048) and the scenario ID (SC-CHAOS-004/005/008)",
+          "and_then": [
+            "requirement IDs from CC-0048 are listed in the chainsaw-test.yaml header"
+          ]
+        },
+        {
+          "name": "Step numbering follows convention",
+          "when": "chainsaw-test.yaml steps are reviewed",
+          "then": "each step has a comment matching '# ── Step N: Description ──' format with dashes filling to column 72",
+          "and_then": [
+            "steps are sequentially numbered starting from 1"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create tests/e2e-chaos/operator-pod-crash/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-op, database keystone_chaos_op, replicas: 1) and 01-podchaos.yaml (PodChaos kill-operator, action: pod-kill, mode: one, selector: app.kubernetes.io/name=keystone-operator in openstack namespace, gracePeriod: 0). Both files with SPDX headers referencing CC-0048. Follow exact patterns from tests/e2e-chaos/mariadb-pod-kill/ fixtures. (CC-0048, REQ-001, REQ-007, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-001",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Create tests/e2e-chaos/cronjob-rotation-failure/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-cron, database keystone_chaos_cron, replicas: 1) and 01-podchaos.yaml (PodChaos fail-cronjob, action: pod-failure, mode: all, duration: 60s, selector: job-name=chaos-cron-test in openstack namespace). Both files with SPDX headers referencing CC-0048. CR follows pattern from tests/e2e-chaos/mariadb-pod-kill/00-keystone-cr.yaml; PodChaos uses pod-failure action (not pod-kill) per feature spec. (CC-0048, REQ-002, REQ-007, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Create tests/e2e-chaos/api-pod-kill-pdb/ fixtures: 00-keystone-cr.yaml (Keystone CR keystone-chaos-api, database keystone_chaos_api, replicas: 3 — differs from other fixtures to trigger minAvailable=1 PDB) and 01-podchaos.yaml (PodChaos kill-keystone-api, action: pod-kill, mode: one, selector: app.kubernetes.io/name=keystone AND app.kubernetes.io/instance=keystone-chaos-api in openstack, gracePeriod: 0). Both files with SPDX headers referencing CC-0048. (CC-0048, REQ-003, REQ-004, REQ-007, REQ-008)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Create tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml — SC-CHAOS-004 operator crash recovery test. 6 steps: (1) Apply 00-keystone-cr.yaml, (2) Assert baseline Ready=True with reason AllReady + catch diagnostics.sh baseline, (3) Apply 01-podchaos.yaml kill-operator, (4) Wait for operator pod Ready=false then Ready=true (condition-based waits, selector: app.kubernetes.io/name=keystone-operator, timeout: 2m each) + catch diagnostics, (5) Delete PodChaos kill-operator, (6) Assert Ready=True with reason AllReady + catch diagnostics.sh chaos. Test name: keystone-operator-pod-crash. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-004 comment block, numbered step comments. Follow pattern from tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml (no-regression with condition waits). (CC-0048, REQ-001, REQ-005, REQ-006, REQ-008)",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-005",
+        "REQ-006",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Create tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml — SC-CHAOS-005 CronJob failure resilience test. 7 steps: (1) Apply 00-keystone-cr.yaml, (2) Assert baseline Ready=True + catch diagnostics.sh baseline, (3) Apply 01-podchaos.yaml fail-cronjob (PodChaos must be active BEFORE Job creation so it catches pods on creation), (4) Script: 'kubectl create job chaos-cron-test --from=cronjob/keystone-chaos-cron-fernet-rotate -n $NAMESPACE' + catch with CronJob status, (5) Assert FernetKeysReady=True AND Ready=True with reason AllReady + catch with Job status, job pod logs, diagnostics.sh chaos, (6) Delete PodChaos fail-cronjob, (7) Assert Ready=True + catch diagnostics.sh chaos. Test name: keystone-cronjob-rotation-failure. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-005 comment block. (CC-0048, REQ-002, REQ-006, REQ-008)",
+      "level": 2,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-002",
+        "REQ-006",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Create tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml — SC-CHAOS-008 PDB enforcement test. 7 steps: (1) Apply 00-keystone-cr.yaml (replicas: 3), (2) Assert baseline Ready=True + catch diagnostics.sh baseline, (3) Assert PDB keystone-chaos-api-api exists with spec.minAvailable: 1 (apiVersion: policy/v1) + catch with PDB describe, (4) Apply 01-podchaos.yaml kill-keystone-api, (5) Script step: poll until Deployment readyReplicas < 3 (kill took effect), then assert availableReplicas >= 1; followed by Chainsaw assert of DeploymentReady=True AND Ready=True with reason AllReady + catch diagnostics, (6) Delete PodChaos kill-keystone-api, (7) Assert Ready=True with reason AllReady + catch diagnostics.sh chaos. Test name: keystone-api-pod-kill-pdb. Namespace: openstack. Timeouts: assert: 5m. SPDX header, CC-0048 + SC-CHAOS-008 comment block. (CC-0048, REQ-003, REQ-004, REQ-006, REQ-008)",
+      "level": 2,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-006",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update docs/reference/chaos-e2e-tests.md — Add SC-CHAOS-004, SC-CHAOS-005, SC-CHAOS-008 to the existing reference documentation. Update: (a) Overview diagram to include the 3 new scenarios, (b) Test Suite Inventory table with scenario IDs, CR names, test patterns, condition assertions, and requirement references, (c) Detailed sections for each scenario (Purpose, Steps table, Fixtures, Catch blocks) following the pattern of existing SC-CHAOS-001/002/003 sections, (d) Keystone CR Fixtures table with new names/databases, (e) PodChaos CRD Pattern section noting pod-failure action for SC-CHAOS-005 and multi-label selector for SC-CHAOS-008, (f) File Layout tree with 3 new directories, (g) Catch Block Diagnostics matrix with new scenarios. (CC-0048, REQ-008)",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-008"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml",
+      "test_function": "step-2-baseline-ready-true",
+      "story": "Operator pod crash recovery validation",
+      "expected": "[e2e] Keystone CR keystone-chaos-op reaches Ready=True with reason AllReady before chaos injection, confirming healthy baseline state",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml",
+      "test_function": "step-4-operator-pod-recovery-wait",
+      "story": "Operator pod crash recovery validation",
+      "expected": "[e2e] Operator pod transitions Ready=false (kill took effect) then Ready=true (Deployment controller restarted pod) via condition-based waits with 2m timeout each",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml",
+      "test_function": "step-6-ready-true-after-rereconciliation",
+      "story": "Operator pod crash recovery validation",
+      "expected": "[e2e] After operator pod restart and re-reconciliation, Keystone CR shows Ready=True with reason AllReady — no sub-condition stuck in False state",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml",
+      "test_function": "catch-blocks-all-assert-steps",
+      "story": "Diagnostic output enables failure investigation from CI logs",
+      "expected": "[e2e] Steps 2, 6 have catch blocks calling diagnostics.sh with appropriate mode (baseline/chaos) and --dep-label=app.kubernetes.io/name=keystone-operator",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml",
+      "test_function": "step-3-trigger-manual-job",
+      "story": "CronJob rotation failure resilience validation",
+      "expected": "[e2e] Script step runs 'kubectl create job chaos-cron-test --from=cronjob/keystone-chaos-cron-fernet-rotate' to trigger a fernet rotation Job for fault injection",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml",
+      "test_function": "step-5-fernet-keys-ready-maintained",
+      "story": "CronJob rotation failure resilience validation",
+      "expected": "[e2e] During active pod-failure injection on CronJob pods, FernetKeysReady=True is asserted — operator does not degrade because reconcileFernetKeys checks Secret+CronJob existence not Job runs",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml",
+      "test_function": "step-5-ready-true-maintained",
+      "story": "CronJob rotation failure resilience validation",
+      "expected": "[e2e] During active pod-failure injection, Ready=True with reason AllReady is maintained — no condition cascade from CronJob failure",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml",
+      "test_function": "step-7-ready-true-after-cleanup",
+      "story": "CronJob rotation failure resilience validation",
+      "expected": "[e2e] After PodChaos deletion, Ready=True with reason AllReady maintained — CronJob remains correctly configured",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e-chaos/cronjob-rotation-failure/chainsaw-test.yaml",
+      "test_function": "catch-blocks-include-job-diagnostics",
+      "story": "Diagnostic output enables failure investigation from CI logs",
+      "expected": "[e2e] Catch blocks collect CronJob status, Job status, job pod logs (label job-name=chaos-cron-test), and operator diagnostics via diagnostics.sh",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml",
+      "test_function": "step-3-pdb-minAvailable-assertion",
+      "story": "PDB enforcement during API pod disruption",
+      "expected": "[e2e] PodDisruptionBudget keystone-chaos-api-api exists with spec.minAvailable: 1 (created by buildPodDisruptionBudget for replicas=3)",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml",
+      "test_function": "step-5-available-replicas-during-disruption",
+      "story": "PDB enforcement during API pod disruption",
+      "expected": "[e2e] During pod kill, Deployment keystone-chaos-api-api has availableReplicas >= 1 — at least one API pod remained available throughout disruption",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml",
+      "test_function": "step-5-deployment-ready-maintained",
+      "story": "PDB enforcement during API pod disruption",
+      "expected": "[e2e] DeploymentReady=True maintained on Keystone CR during single pod kill because availableReplicas never drops to 0",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml",
+      "test_function": "step-5-ready-true-maintained",
+      "story": "PDB enforcement during API pod disruption",
+      "expected": "[e2e] Ready=True with reason AllReady maintained during API pod disruption — no condition regression",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e-chaos/api-pod-kill-pdb/chainsaw-test.yaml",
+      "test_function": "step-7-full-recovery",
+      "story": "PDB enforcement during API pod disruption",
+      "expected": "[e2e] After PodChaos cleanup and pod replacement, Ready=True with reason AllReady confirmed — full replica count restored",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/00-keystone-cr.yaml",
+      "test_function": "unique-cr-name-keystone-chaos-op",
+      "story": "New chaos scenarios integrate with existing CI framework",
+      "expected": "[e2e] Keystone CR name is keystone-chaos-op with database keystone_chaos_op — unique across all chaos tests",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/e2e-chaos/operator-pod-crash/chainsaw-test.yaml",
+      "test_function": "spdx-header-and-cc0048-reference",
+      "story": "New chaos scenarios integrate with existing CI framework",
+      "expected": "[e2e] File has SPDX Apache-2.0 header lines 1-3, comment block references CC-0048 and SC-CHAOS-004, steps use numbered comment format",
+      "requirement_id": "REQ-008"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "All 9 new files (3 directories x 3 files) have SPDX Apache-2.0 headers (lines 1-3) and CC-0048 references in comment blocks",
+    "Each Keystone CR fixture uses a unique name/database pair: keystone-chaos-op/keystone_chaos_op, keystone-chaos-cron/keystone_chaos_cron, keystone-chaos-api/keystone_chaos_api — no collision with L002 names",
+    "PodChaos CRDs use correct actions: pod-kill for SC-CHAOS-004 and SC-CHAOS-008, pod-failure with duration: 60s for SC-CHAOS-005; selectors target the correct pods via standard Kubernetes labels",
+    "All chainsaw-test.yaml files follow numbered step pattern ('# ── Step N: Description ──'), JMESPath condition assertions with string status values, and catch blocks on every assert step",
+    "SC-CHAOS-004 validates operator pod restart via condition-based waits (Ready=false then Ready=true on operator pod) followed by Keystone CR Ready=True assertion",
+    "SC-CHAOS-005 triggers a manual Job from CronJob before fault injection, asserts FernetKeysReady=True and Ready=True maintained during pod-failure injection",
+    "SC-CHAOS-008 uses replicas: 3 Keystone CR, explicitly asserts PDB minAvailable=1 on keystone-chaos-api-api, and verifies Deployment availableReplicas >= 1 during pod kill",
+    "docs/reference/chaos-e2e-tests.md updated with all 3 new scenarios: inventory table, detailed sections, fixtures table, PodChaos patterns, file layout, diagnostics matrix"
+  ],
+  "implementation_notes": "Architecture overview:\n\n```\ntests/e2e-chaos/\n├── operator-pod-crash/           SC-CHAOS-004: Operator self-recovery\n│   ├── 00-keystone-cr.yaml       keystone-chaos-op, replicas: 1\n│   ├── 01-podchaos.yaml          kill-operator, pod-kill, keystone-operator\n│   └── chainsaw-test.yaml        6 steps, no-regression pattern\n├── cronjob-rotation-failure/     SC-CHAOS-005: CronJob fault tolerance\n│   ├── 00-keystone-cr.yaml       keystone-chaos-cron, replicas: 1\n│   ├── 01-podchaos.yaml          fail-cronjob, pod-failure, 60s\n│   └── chainsaw-test.yaml        7 steps, custom with script trigger\n└── api-pod-kill-pdb/             SC-CHAOS-008: PDB availability guarantee\n    ├── 00-keystone-cr.yaml       keystone-chaos-api, replicas: 3\n    ├── 01-podchaos.yaml          kill-keystone-api, pod-kill, mode: one\n    └── chainsaw-test.yaml        7 steps, PDB-aware availability pattern\n```\n\nData flow per scenario:\n\n```\nSC-CHAOS-004: PodChaos pod-kill → operator pod killed → Deployment restarts\n  → controller-runtime re-registers watches → reconcile loop re-runs\n  → all sub-reconcilers pass idempotent checks → Ready=True\n\nSC-CHAOS-005: Script triggers Job from CronJob → PodChaos pod-failure\n  injects continuous failure for 60s → Job pods keep failing\n  → operator reconciles normally (EnsureCronJob returns nil, Secret exists)\n  → FernetKeysReady=True unchanged → Ready=True stable\n\nSC-CHAOS-008: PodChaos pod-kill (mode:one) → 1 of 3 API pods killed\n  → 2 pods remain available → Deployment replaces killed pod\n  → DeploymentReady=True (availableReplicas >= 1) → Ready=True stable\n```\n\nKey design decisions:\n\n1. **SC-CHAOS-004 pattern:** Uses condition-based waits (Ready=false → Ready=true) on the operator pod, matching the SC-CHAOS-002 memcached-pod-kill pattern. The operator pod has a unique label (app.kubernetes.io/name=keystone-operator from Helm _helpers.tpl:47) that distinguishes it from Keystone API pods (app.kubernetes.io/name=keystone).\n\n2. **SC-CHAOS-005 PodChaos ordering:** PodChaos is applied BEFORE the manual Job is created (Step 3 before Step 4) so Chaos Mesh catches the Job pods as they appear. Using pod-failure (sustained, 60s) not pod-kill because the feature spec explicitly requires it. Selector uses job-name=chaos-cron-test label (automatically added by Kubernetes to pods created by a Job).\n\n3. **SC-CHAOS-005 operator behavior:** reconcileFernetKeys() (reconcile_fernet.go:60-113) calls job.EnsureCronJob() which only ensures the CronJob spec exists — it does NOT monitor individual Job runs. FernetKeysReady=True is set after Secret+CronJob existence, not Job completion. This is the correct behavior being validated.\n\n4. **SC-CHAOS-008 replicas:** Uses replicas: 3 (not 2) for a cleaner test: killing 1 of 3 leaves 2 available, which is unambiguously > minAvailable=1. With replicas: 2, killing 1 would leave exactly 1 = minAvailable, which could be flaky if the check races with the kill.\n\n5. **SC-CHAOS-008 PDB naming:** PDB name is apiResourceName(keystone) = '{cr-name}-api' (reconcile_hpa.go:26-28). For CR 'keystone-chaos-api', PDB is 'keystone-chaos-api-api'. The test asserts this specific name.\n\n6. **SC-CHAOS-008 availability check:** Uses a script step to poll Deployment status because Chainsaw's `wait` with a label selector waits for ALL matching pods, which won't work when we only want to verify that NOT ALL pods are down. The script polls readyReplicas < 3 (kill took effect) then asserts availableReplicas >= 1.\n\n7. **No CI changes needed:** The e2e-chaos Makefile target runs 'chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/' which auto-discovers new directories. The GitHub Actions job already has the correct path filter.\n\nDeferred items:\n- SC-CHAOS-006 (network partition) and SC-CHAOS-007 (network latency) — separate layer from L003 scope, requires NetworkChaos CRD instead of PodChaos\n- CronJob Job failure monitoring in operator — current reconcileFernetKeys() does not check individual Job runs; adding active monitoring would be a separate feature\n- PDB eviction-based testing — PodChaos pod-kill bypasses PDB (it's involuntary disruption); testing PDB enforcement via actual eviction (kubectl drain or eviction API) would require different Chaos Mesh action or custom script\n- Credential rotation failure testing — follows identical pattern to fernet rotation; testing one covers the pattern\n- Operator crash during specific sub-reconciler — SC-CHAOS-004 validates the general case; targeted crashes at specific reconciliation points would require instrumenting the operator with fault injection hooks",
+  "status_history": {
+    "proposed": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-07T21:06:32.369333"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T09:41:49.168449"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T10:00:08.353043"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "0d95c575-87e0-4aef-9bcf-60fe605159e0",
+      "timestamp": "2026-04-12T10:00:08.353070",
+      "total_duration": 1096.1898868083954,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 1096.1898868083954,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
