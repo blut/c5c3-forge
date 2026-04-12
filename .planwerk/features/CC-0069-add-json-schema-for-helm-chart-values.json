@@ -1,0 +1,583 @@
+{
+  "feature_id": "CC-0069",
+  "title": "Add JSON schema for Helm chart values",
+  "slug": "add-json-schema-for-helm-chart-values",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #189: Add JSON schema for Helm chart values\n\n**Category**: improvement | **Scope**: Medium\n\n**Description**: Create a values.schema.json file for the Helm chart that validates all values.yaml fields with proper types, constraints, descriptions, and defaults. Include constraints like minimum replica counts, valid log levels, valid image pull policies, port ranges, and resource request/limit formats. Reference it from Chart.yaml.\n\n**Motivation**: Without a JSON schema, users can set invalid values (e.g., replicas: -1, logLevel: 'verbose') without any feedback until Helm template rendering or runtime failure. A schema provides IDE autocompletion, early validation during helm install/upgrade, and serves as living documentation of all configuration options.\n\n**Affected Areas**:\n- `operators/keystone/charts/keystone-operator/`\n\n**Acceptance Criteria**:\n- [ ] values.schema.json covers all fields in values.yaml\n- [ ] Schema enforces type constraints, enums for known value sets, and min/max where applicable\n- [ ] helm install with invalid values produces a clear validation error\n- [ ] IDE autocompletion works with the schema in VS Code with the Helm extension\n- [ ] Schema is referenced in Chart.yaml\n\n---\nSource: https://github.com/C5C3/forge/issues/189",
+  "stories": [
+    {
+      "title": "Operator deployer gets early validation of Helm values",
+      "role": "operator deployer",
+      "want": "Helm to reject invalid values at install/upgrade time before any templates are rendered",
+      "so_that": "I catch configuration errors immediately rather than debugging runtime failures",
+      "criteria": [
+        "helm install with replicas: -1 fails with a clear validation error mentioning minimum value",
+        "helm install with pullPolicy: 'Sometimes' fails with a clear error listing valid options",
+        "helm install with metrics.port: 99999 fails with a clear error about port range",
+        "helm install with valid default values succeeds without any schema validation errors"
+      ]
+    },
+    {
+      "title": "Chart developer gets IDE autocompletion for values",
+      "role": "chart developer",
+      "want": "my IDE to provide autocompletion and inline documentation for all values.yaml fields",
+      "so_that": "I can discover available configuration options without reading source templates",
+      "criteria": [
+        "values.schema.json is a valid JSON Schema (Draft 2020-12 or Draft-07)",
+        "Every property has a 'description' field explaining its purpose",
+        "Default values in the schema match the defaults in values.yaml",
+        "Schema is referenced from Chart.yaml so tooling discovers it automatically"
+      ]
+    },
+    {
+      "title": "Operator deployer gets validation of type constraints",
+      "role": "operator deployer",
+      "want": "the schema to enforce correct types for all values fields",
+      "so_that": "type mismatches (e.g., string where integer expected) are caught before deployment",
+      "criteria": [
+        "replicas rejects non-integer values (e.g., replicas: 'two')",
+        "Boolean fields (webhook.enabled, leaderElection.enabled, rbac.namespaceScoped, serviceAccount.create) reject non-boolean values",
+        "metrics.port rejects non-integer values",
+        "image.repository and image.tag accept only strings"
+      ]
+    },
+    {
+      "title": "Operator deployer provides valid resource requests and limits",
+      "role": "operator deployer",
+      "want": "the schema to accept valid Kubernetes resource quantity formats for CPU and memory",
+      "so_that": "I can use standard Kubernetes resource notation (e.g., 500m, 128Mi) without false rejections",
+      "criteria": [
+        "resources.limits.cpu accepts valid patterns like '500m', '1', '0.5', '100m'",
+        "resources.limits.memory accepts valid patterns like '128Mi', '1Gi', '256M'",
+        "resources.requests.cpu and resources.requests.memory follow the same validation",
+        "Schema uses pattern matching for Kubernetes resource quantity format"
+      ]
+    },
+    {
+      "title": "CI pipeline validates chart with schema",
+      "role": "CI system",
+      "want": "helm lint to automatically validate the schema is well-formed and consistent with values.yaml",
+      "so_that": "schema drift from values.yaml is caught in the existing CI helm-validate job",
+      "criteria": [
+        "helm lint passes with the schema present in the chart directory",
+        "Existing helm template scenarios in CI continue to pass with schema validation",
+        "helm unittest continues to pass with schema present",
+        "No changes needed to CI workflow since helm lint already validates schema when present"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The chart SHALL include a values.schema.json file that covers every top-level and nested field defined in values.yaml",
+      "priority": "SHALL",
+      "rationale": "Ensures all configuration options are validated, preventing partial coverage that gives false confidence",
+      "scenarios": [
+        {
+          "name": "All values.yaml fields present in schema",
+          "when": "the schema is compared against values.yaml",
+          "then": "every field in values.yaml has a corresponding property definition in the schema",
+          "and_then": [
+            "no values.yaml field is missing from the schema"
+          ]
+        },
+        {
+          "name": "Schema validates default values",
+          "when": "helm lint is run with no value overrides (using default values.yaml)",
+          "then": "no schema validation errors are reported",
+          "and_then": [
+            "the chart renders successfully"
+          ]
+        },
+        {
+          "name": "Additional properties are rejected at root level",
+          "when": "a user sets an undefined field (e.g., --set foo=bar)",
+          "then": "helm install fails with a validation error indicating the unexpected property",
+          "and_then": [
+            "the error message identifies the unknown property name"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The schema SHALL enforce correct JSON Schema types for all properties (integer, boolean, string, object)",
+      "priority": "SHALL",
+      "rationale": "Type enforcement prevents the most common class of misconfiguration errors",
+      "scenarios": [
+        {
+          "name": "Integer fields reject strings",
+          "when": "replicas is set to a string value like 'two'",
+          "then": "helm install fails with a type validation error",
+          "and_then": [
+            "the error identifies the expected type as integer"
+          ]
+        },
+        {
+          "name": "Boolean fields reject strings",
+          "when": "webhook.enabled is set to 'yes' (a string, not boolean)",
+          "then": "helm install fails with a type validation error",
+          "and_then": [
+            "the error identifies the expected type as boolean"
+          ]
+        },
+        {
+          "name": "String fields accept strings",
+          "when": "image.repository is set to a valid registry path string",
+          "then": "schema validation passes",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The schema SHALL enforce enum constraints for fields with a known set of valid values",
+      "priority": "SHALL",
+      "rationale": "Enum validation catches typos and invalid options that would silently pass without schema",
+      "scenarios": [
+        {
+          "name": "Valid pullPolicy accepted",
+          "when": "image.pullPolicy is set to 'Always', 'IfNotPresent', or 'Never'",
+          "then": "schema validation passes",
+          "and_then": []
+        },
+        {
+          "name": "Invalid pullPolicy rejected",
+          "when": "image.pullPolicy is set to 'Sometimes' or any other non-enum value",
+          "then": "helm install fails with a validation error listing allowed values",
+          "and_then": [
+            "the error message includes the enum options"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The schema SHALL enforce minimum/maximum constraints where semantically appropriate",
+      "priority": "SHALL",
+      "rationale": "Range validation prevents nonsensical values like negative replicas or out-of-range ports",
+      "scenarios": [
+        {
+          "name": "Replicas minimum enforced",
+          "when": "replicas is set to 0 or a negative number",
+          "then": "helm install fails with a validation error about minimum value",
+          "and_then": [
+            "the error indicates the minimum allowed value is 1"
+          ]
+        },
+        {
+          "name": "Metrics port range enforced",
+          "when": "metrics.port is set to 0 or 65536",
+          "then": "helm install fails with a validation error about port range",
+          "and_then": [
+            "the error indicates the valid range (1-65535)"
+          ]
+        },
+        {
+          "name": "Valid replicas accepted",
+          "when": "replicas is set to 1 or higher",
+          "then": "schema validation passes",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The schema SHALL include a description field for every property to serve as living documentation",
+      "priority": "SHALL",
+      "rationale": "Descriptions enable IDE autocompletion tooltips and serve as documentation for users unfamiliar with the chart",
+      "scenarios": [
+        {
+          "name": "All properties have descriptions",
+          "when": "the schema is inspected programmatically",
+          "then": "every property definition includes a non-empty 'description' field",
+          "and_then": [
+            "descriptions are clear and mention constraints where applicable"
+          ]
+        },
+        {
+          "name": "Descriptions match values.yaml comments",
+          "when": "descriptions are compared against values.yaml inline comments",
+          "then": "the schema descriptions are consistent with or more detailed than the YAML comments",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The schema SHALL specify default values that match values.yaml defaults",
+      "priority": "SHALL",
+      "rationale": "Matching defaults ensure IDE tooling shows the actual default values, preventing confusion",
+      "scenarios": [
+        {
+          "name": "Schema defaults match values.yaml",
+          "when": "each schema property with a 'default' is compared against values.yaml",
+          "then": "all default values match exactly",
+          "and_then": []
+        },
+        {
+          "name": "Empty-string defaults represented correctly",
+          "when": "image.tag has an empty string default in values.yaml",
+          "then": "the schema also specifies default: '' for image.tag",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "Chart.yaml SHALL reference the schema file so Helm and tooling discover it automatically",
+      "priority": "SHALL",
+      "rationale": "Helm automatically loads values.schema.json from the chart root — no Chart.yaml reference needed for validation, but a comment serves as explicit documentation of the schema's presence",
+      "scenarios": [
+        {
+          "name": "Schema file placed at chart root",
+          "when": "helm lint is run on the chart",
+          "then": "Helm discovers and validates values.schema.json from the chart directory",
+          "and_then": []
+        },
+        {
+          "name": "Chart.yaml version preserved",
+          "when": "Chart.yaml is modified",
+          "then": "apiVersion, name, version, and appVersion fields remain unchanged",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The schema SHALL use additionalProperties: false at each object level to reject unknown fields",
+      "priority": "SHALL",
+      "rationale": "Rejecting unknown fields catches typos in field names that would otherwise be silently ignored",
+      "scenarios": [
+        {
+          "name": "Typo in top-level field caught",
+          "when": "a user sets --set replcia=3 (typo of replicas)",
+          "then": "helm install fails with a validation error about the unknown property",
+          "and_then": []
+        },
+        {
+          "name": "Typo in nested field caught",
+          "when": "a user sets --set image.repo=foo (should be image.repository)",
+          "then": "helm install fails with a validation error about the unknown property under image",
+          "and_then": []
+        },
+        {
+          "name": "Valid fields pass",
+          "when": "all fields match the schema property names exactly",
+          "then": "schema validation passes",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The schema SHALL validate Kubernetes resource quantity strings with an appropriate pattern",
+      "priority": "SHALL",
+      "rationale": "Resource quantities have a specific format; validating the pattern prevents deployment failures from malformed resource specifications",
+      "scenarios": [
+        {
+          "name": "Valid CPU quantities accepted",
+          "when": "resources.limits.cpu is set to '500m', '1', '0.5', '2000m'",
+          "then": "schema validation passes for all valid patterns",
+          "and_then": []
+        },
+        {
+          "name": "Valid memory quantities accepted",
+          "when": "resources.limits.memory is set to '128Mi', '1Gi', '256M', '512Ki'",
+          "then": "schema validation passes for all valid patterns",
+          "and_then": []
+        },
+        {
+          "name": "Invalid resource quantity rejected",
+          "when": "resources.limits.cpu is set to 'lots' or '-1'",
+          "then": "helm install fails with a pattern validation error",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "Existing CI helm-validate job SHALL continue to pass with the schema in place",
+      "priority": "SHALL",
+      "rationale": "The schema must not break existing CI scenarios (helm lint, helm template, helm unittest)",
+      "scenarios": [
+        {
+          "name": "Default values pass schema",
+          "when": "helm lint is run with default values",
+          "then": "lint passes with no schema errors",
+          "and_then": []
+        },
+        {
+          "name": "CI template scenarios pass schema",
+          "when": "all 5 existing helm template scenarios in CI are run",
+          "then": "all scenarios pass schema validation",
+          "and_then": [
+            "webhook disabled, external SA, custom resources, namespace-scoped all pass"
+          ]
+        },
+        {
+          "name": "Unittest suite passes",
+          "when": "helm unittest is run with the schema present",
+          "then": "all existing tests pass unchanged",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create values.schema.json with complete property definitions for all values.yaml fields (REQ-001, REQ-002, REQ-005, REQ-006)",
+      "description": "Create operators/keystone/helm/keystone-operator/values.schema.json with JSON Schema Draft-07. Define every property from values.yaml: image (repository, tag, pullPolicy), replicas, resources (limits/requests with cpu/memory), rbac (namespaceScoped), leaderElection (enabled), webhook (enabled), metrics (port), serviceAccount (create, name). Also include nameOverride and fullnameOverride used in _helpers.tpl. Each property must have: type, description, default matching values.yaml. Use additionalProperties: false at all object levels.",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Add enum constraints for image.pullPolicy (REQ-003)",
+      "description": "In the values.schema.json created in 1.1, ensure image.pullPolicy has enum: ['Always', 'IfNotPresent', 'Never']. This is part of 1.1 but called out explicitly for traceability.",
+      "level": 1,
+      "estimate_minutes": 5,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Add minimum/maximum constraints for replicas and metrics.port (REQ-004)",
+      "description": "In the values.schema.json: replicas has minimum: 1. metrics.port has minimum: 1 and maximum: 65535. This is part of 1.1 but called out explicitly for traceability.",
+      "level": 1,
+      "estimate_minutes": 5,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Add Kubernetes resource quantity pattern validation for resources fields (REQ-009)",
+      "description": "In the values.schema.json: define a pattern for CPU and memory resource quantity strings. CPU pattern should accept: integer, decimal, millicpu (e.g., '500m', '1', '0.5'). Memory pattern should accept: plain integers and suffixed values (e.g., '128Mi', '1Gi', '256M', '512Ki'). Use regex patterns compatible with JSON Schema.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Add additionalProperties: false at all object levels (REQ-008)",
+      "description": "Ensure every object in the schema (root, image, resources, resources.limits, resources.requests, rbac, leaderElection, webhook, metrics, serviceAccount) has additionalProperties: false. This is part of 1.1 but called out explicitly for traceability.",
+      "level": 1,
+      "estimate_minutes": 5,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Update Chart.yaml to reference the schema (REQ-007)",
+      "description": "Helm auto-discovers values.schema.json from the chart root directory. No Chart.yaml field is needed for discovery. However, the issue requests referencing it from Chart.yaml. Add a comment in Chart.yaml noting the schema file exists, or if Helm supports a 'schema' annotation, use that. Keep existing Chart.yaml fields unchanged.",
+      "level": 2,
+      "estimate_minutes": 5,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add helm-unittest tests for schema validation of invalid values (REQ-001, REQ-002, REQ-003, REQ-004, REQ-008, REQ-009) [unit]",
+      "description": "Create operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml. Test cases: (1) default values pass validation (helm template succeeds), (2) invalid pullPolicy value fails, (3) replicas below minimum fails, (4) metrics.port out of range fails, (5) unknown top-level property fails, (6) unknown nested property fails. Note: helm-unittest may not directly test schema validation — if not, create a shell-based test script that uses helm template with --set to validate. Verify approach against helm-unittest capabilities first.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-008",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Verify all existing CI helm template scenarios pass with schema (REQ-010) [integration]",
+      "description": "Run locally all 5 CI helm template scenarios from .github/workflows/ci.yaml: (1) default values, (2) webhook.enabled=false, (3) serviceAccount.create=false + serviceAccount.name=existing-sa, (4) custom resources, (5) rbac.namespaceScoped=true + webhook.enabled=false. Also run helm lint and helm unittest. Fix any schema validation failures by adjusting the schema (not the CI scenarios).",
+      "level": 2,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Write Reference documentation for the values.schema.json (REQ-005)",
+      "description": "Create docs/reference/backend/keystone-operator-helm-values-schema.md. Document: purpose of the schema, list of all validated fields with types/constraints/defaults in a table, how to use with IDE (VS Code Helm extension), how Helm validates values at install/upgrade time. Reference the existing docs/reference/backend/keystone-operator-packaging.md for chart packaging context.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-005"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should render successfully with default values",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with default values.yaml should succeed without schema errors [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when an unknown top-level property is set",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set unknownField=true should fail with additionalProperties error [unit]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when image.pullPolicy is invalid",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set image.pullPolicy=Sometimes should fail with enum error [unit]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when replicas is below minimum",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set replicas=0 should fail with minimum value error [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when replicas is negative",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set replicas=-1 should fail with minimum value error [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when metrics.port is out of range (0)",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set metrics.port=0 should fail with minimum value error [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when metrics.port exceeds 65535",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set metrics.port=70000 should fail with maximum value error [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should fail when unknown nested property is set under image",
+      "story": "Operator deployer gets early validation of Helm values",
+      "expected": "helm template with --set image.repo=foo should fail with additionalProperties error [unit]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should render successfully with webhook disabled",
+      "story": "CI pipeline validates chart with schema",
+      "expected": "helm template with --set webhook.enabled=false should pass schema validation [unit]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should render successfully with external service account",
+      "story": "CI pipeline validates chart with schema",
+      "expected": "helm template with --set serviceAccount.create=false --set serviceAccount.name=existing-sa should pass [unit]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should render successfully with namespace-scoped RBAC",
+      "story": "CI pipeline validates chart with schema",
+      "expected": "helm template with --set rbac.namespaceScoped=true --set webhook.enabled=false should pass [unit]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should render successfully with custom resource limits",
+      "story": "Operator deployer provides valid resource requests and limits",
+      "expected": "helm template with --set resources.limits.cpu=100m --set resources.limits.memory=64Mi should pass [unit]",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should accept valid resource quantity patterns",
+      "story": "Operator deployer provides valid resource requests and limits",
+      "expected": "Schema accepts '500m', '1', '0.5', '128Mi', '1Gi' as resource quantities [unit]",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should have descriptions for all properties",
+      "story": "Chart developer gets IDE autocompletion for values",
+      "expected": "Every property in the schema has a non-empty description field [unit]",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/values_schema_test.yaml",
+      "test_function": "should have defaults matching values.yaml",
+      "story": "Chart developer gets IDE autocompletion for values",
+      "expected": "All schema defaults match the corresponding values in values.yaml [unit]",
+      "requirement_id": "REQ-006"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "values.schema.json is valid JSON Schema (parseable, no syntax errors)",
+    "Every field in values.yaml has a corresponding property in the schema with correct type, description, and default",
+    "nameOverride and fullnameOverride from _helpers.tpl are included as optional string properties",
+    "additionalProperties: false is set on every object (root, image, resources, resources.limits, resources.requests, rbac, leaderElection, webhook, metrics, serviceAccount)",
+    "Enum constraint on image.pullPolicy matches Kubernetes spec: Always, IfNotPresent, Never",
+    "Minimum/maximum constraints: replicas >= 1, metrics.port in 1-65535",
+    "Resource quantity patterns accept standard K8s formats (500m, 128Mi, 1Gi, 0.5)",
+    "helm lint passes with default values and schema present",
+    "All 5 CI helm template scenarios pass with schema present",
+    "helm unittest passes with all existing tests unchanged",
+    "Schema defaults match values.yaml defaults exactly",
+    "Reference documentation covers all fields with types, constraints, and descriptions"
+  ],
+  "implementation_notes": "Architecture: Single values.schema.json file placed at operators/keystone/helm/keystone-operator/values.schema.json alongside Chart.yaml and values.yaml. Helm auto-discovers this file. No code changes to templates needed.\n\nSchema structure mirrors values.yaml hierarchy:\n- Root object with additionalProperties: false\n- image: { repository (string), tag (string), pullPolicy (enum) }\n- replicas: integer, minimum 1\n- resources: { limits: { cpu, memory }, requests: { cpu, memory } } with K8s quantity patterns\n- rbac: { namespaceScoped (boolean) }\n- leaderElection: { enabled (boolean) }\n- webhook: { enabled (boolean) }\n- metrics: { port (integer, 1-65535) }\n- serviceAccount: { create (boolean), name (string) }\n- nameOverride: string (optional, from _helpers.tpl)\n- fullnameOverride: string (optional, from _helpers.tpl)\n\nPotential pitfall: helm-unittest sets values via 'set:' blocks which internally go through schema validation. Ensure the schema allows all value combinations used in existing tests. Verify by running helm unittest after adding schema.\n\nK8s resource quantity pattern: Use a permissive regex that covers the common formats (integer, decimal, millicpu suffix, binary/SI memory suffixes) without being overly strict.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T19:45:15.124327"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T19:45:15.457232"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-12T19:49:06.759270"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "57503c83-bf69-4f44-aed9-4ed1a970e342",
+      "timestamp": "2026-04-12T19:49:06.759298",
+      "total_duration": 227.0273003578186,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 227.0273003578186,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
