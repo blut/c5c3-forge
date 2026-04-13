@@ -1,0 +1,610 @@
+{
+  "feature_id": "CC-0073",
+  "title": "Extract rotation scripts into versioned ConfigMaps",
+  "slug": "extract-rotation-scripts-into-versioned-configmaps",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #191: Extract embedded rotation scripts into versioned, testable ConfigMaps\n\n**Category**: refactoring | **Scope**: Medium\n\n**Description**: Replace the inline Go string constants fernetRotateScript and credentialRotateScript (in reconcile_fernet.go and reconcile_credential.go) with externally managed script files embedded via go:embed. Mount them as ConfigMaps in the rotation CronJob pods. This enables linting (shellcheck, pylint), unit testing of script logic, and independent versioning of the rotation logic.\n\n**Motivation**: The current ~40-line scripts mixing shell, Python, and Kubernetes API calls are embedded as raw Go constants with no linting, type checking, or unit testing. A bug in these scripts silently breaks key rotation — one of the most security-critical operations in the system. Extracting them makes them independently testable and auditable.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/reconcile_fernet.go`\n- `operators/keystone/internal/controller/reconcile_credential.go`\n\n**Acceptance Criteria**:\n- [ ] Scripts extracted to standalone files under a scripts/ or embed/ directory\n- [ ] Scripts embedded via go:embed and mounted as ConfigMap volumes\n- [ ] shellcheck passes on shell portions of the scripts\n- [ ] Script logic has at least basic unit/integration tests\n- [ ] Rotation CronJobs function identically to before extraction\n\n---\nSource: https://github.com/C5C3/forge/issues/191",
+  "stories": [
+    {
+      "title": "Developer can lint and test rotation scripts independently",
+      "role": "developer",
+      "want": "Fernet and credential rotation scripts extracted to standalone .sh files under a scripts/ directory",
+      "so_that": "I can run shellcheck, write unit tests, and audit script logic without parsing Go string constants",
+      "criteria": [
+        "fernet_rotate.sh and credential_rotate.sh exist as standalone files under operators/keystone/internal/controller/scripts/",
+        "Both scripts have #!/bin/sh shebangs and pass shellcheck without warnings",
+        "Scripts are embedded via go:embed into Go string variables at compile time",
+        "Embedded content matches the original inline constants byte-for-byte (excluding added shebang)"
+      ]
+    },
+    {
+      "title": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "role": "developer",
+      "want": "rotation scripts delivered as immutable ConfigMaps mounted into CronJob pods",
+      "so_that": "script content is versioned via content-hash naming and CronJobs update automatically when scripts change",
+      "criteria": [
+        "Each rotation reconciler creates an immutable ConfigMap containing its script using CreateImmutableConfigMap",
+        "ConfigMap names follow the {name}-{type}-rotate-script-{hash} pattern",
+        "CronJob pods mount the script ConfigMap at /scripts/ with DefaultMode 0555 (executable)",
+        "CronJob container command changed from inline 'sh -c <script>' to '/scripts/{script}.sh'"
+      ]
+    },
+    {
+      "title": "Operator user sees identical rotation behavior after extraction",
+      "role": "operator user",
+      "want": "Fernet and credential rotation CronJobs to function identically after script extraction",
+      "so_that": "key rotation remains reliable and I don't need to change my deployment or monitoring",
+      "criteria": [
+        "Fernet rotation CronJob still runs keystone-manage fernet_rotate and patches the Secret via K8s API",
+        "Credential rotation CronJob still runs credential_rotate, credential_migrate, and patches the Secret",
+        "All existing CronJob properties unchanged: schedule, image, env vars, RBAC, security context, restart policy",
+        "Existing E2E Chainsaw rotation tests pass without modification"
+      ]
+    },
+    {
+      "title": "Security auditor can independently verify rotation logic",
+      "role": "security auditor",
+      "want": "rotation scripts in standalone files with clear boundaries between shell and Python logic",
+      "so_that": "I can audit the security-critical key rotation code without navigating Go source files",
+      "criteria": [
+        "Script files are self-contained and readable without Go context",
+        "Shell and Python portions are clearly delineated via heredoc boundaries",
+        "Scripts use only Python standard library (no additional image dependencies)",
+        "Service account token authentication to K8s API is visible and auditable in the script"
+      ]
+    },
+    {
+      "title": "CI validates shell script quality via shellcheck",
+      "role": "developer",
+      "want": "a Makefile target that runs shellcheck on all rotation scripts",
+      "so_that": "shell script bugs are caught before merge, preventing silent rotation failures",
+      "criteria": [
+        "make shellcheck target exists and runs shellcheck on operators/keystone/internal/controller/scripts/*.sh",
+        "Both fernet_rotate.sh and credential_rotate.sh pass shellcheck without warnings",
+        "shellcheck correctly handles Python heredoc sections without false positives",
+        "Target can be integrated into CI pipeline alongside existing lint target"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "Rotation scripts SHALL be extracted to standalone .sh files with POSIX shebangs under operators/keystone/internal/controller/scripts/",
+      "priority": "SHALL",
+      "rationale": "Standalone files enable shellcheck linting, independent testing, and auditing without parsing Go source",
+      "scenarios": [
+        {
+          "name": "Fernet script file exists with correct content",
+          "when": "the scripts/ directory is inspected",
+          "then": "fernet_rotate.sh exists with #!/bin/sh shebang and contains the fernet_rotate keystone-manage command",
+          "and_then": [
+            "script content matches the original fernetRotateScript constant (plus shebang)"
+          ]
+        },
+        {
+          "name": "Credential script file exists with correct content",
+          "when": "the scripts/ directory is inspected",
+          "then": "credential_rotate.sh exists with #!/bin/sh shebang and contains credential_rotate AND credential_migrate commands",
+          "and_then": [
+            "script content matches the original credentialRotateScript constant (plus shebang)"
+          ]
+        },
+        {
+          "name": "Scripts use only POSIX shell features",
+          "when": "scripts are analyzed for shell compatibility",
+          "then": "only POSIX-compliant constructs are used (set -e, command execution, heredoc)",
+          "and_then": [
+            "#!/bin/sh shebang is appropriate and no bash-specific features are present"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "Scripts SHALL be embedded into Go package-level string variables via //go:embed directives",
+      "priority": "SHALL",
+      "rationale": "go:embed includes file content at compile time, ensuring scripts are part of the operator binary without runtime file access",
+      "scenarios": [
+        {
+          "name": "Fernet script is embedded via go:embed",
+          "when": "reconcile_fernet.go is compiled",
+          "then": "the fernetRotateScript variable contains the content of scripts/fernet_rotate.sh",
+          "and_then": [
+            "the variable is accessible as a string at runtime"
+          ]
+        },
+        {
+          "name": "Credential script is embedded via go:embed",
+          "when": "reconcile_credential.go is compiled",
+          "then": "the credentialRotateScript variable contains the content of scripts/credential_rotate.sh",
+          "and_then": [
+            "the //nolint:gosec directive is removed since go:embed variables don't trigger G101"
+          ]
+        },
+        {
+          "name": "Blank embed import is present",
+          "when": "reconcile_fernet.go and reconcile_credential.go are inspected",
+          "then": "both files import _ \"embed\" to enable go:embed functionality",
+          "and_then": [
+            "go vet passes without 'go:embed requires import of embed' errors"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "Script content SHALL be delivered as immutable ConfigMaps using the existing CreateImmutableConfigMap pattern with content-hash naming",
+      "priority": "SHALL",
+      "rationale": "Reusing the established immutable ConfigMap pattern ensures script versioning, automatic CronJob updates on content change, and ownership-based garbage collection",
+      "scenarios": [
+        {
+          "name": "Fernet script ConfigMap created during reconciliation",
+          "when": "reconcileFernetKeys runs with the fernet keys Secret already existing",
+          "then": "an immutable ConfigMap is created with name matching {keystoneName}-fernet-rotate-script-{hash}",
+          "and_then": [
+            "ConfigMap data has key 'fernet_rotate.sh' with the embedded script content",
+            "ConfigMap has owner reference to the Keystone CR"
+          ]
+        },
+        {
+          "name": "Credential script ConfigMap created during reconciliation",
+          "when": "reconcileCredentialKeys runs with the credential keys Secret already existing",
+          "then": "an immutable ConfigMap is created with name matching {keystoneName}-credential-rotate-script-{hash}",
+          "and_then": [
+            "ConfigMap data has key 'credential_rotate.sh' with the embedded script content"
+          ]
+        },
+        {
+          "name": "Script ConfigMap creation failure returns error",
+          "when": "CreateImmutableConfigMap fails for the script ConfigMap",
+          "then": "reconcileFernetKeys/reconcileCredentialKeys returns a wrapped error",
+          "and_then": [
+            "the CronJob is NOT created or updated",
+            "the condition is not set to True"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "Rotation CronJobs SHALL mount script ConfigMaps as executable volumes at /scripts/ and execute scripts from the mount path",
+      "priority": "SHALL",
+      "rationale": "Mounting scripts as volumes enables the CronJob to execute the script from a file path instead of inline shell, making the pod spec cleaner and the script independently observable",
+      "scenarios": [
+        {
+          "name": "Fernet CronJob has script volume with correct ConfigMap reference",
+          "when": "the fernet rotation CronJob spec is inspected",
+          "then": "a volume named 'scripts' exists sourced from the script ConfigMap with DefaultMode 0555",
+          "and_then": [
+            "the main container has a volume mount for 'scripts' at /scripts/ (read-only)"
+          ]
+        },
+        {
+          "name": "Credential CronJob has script volume with correct ConfigMap reference",
+          "when": "the credential rotation CronJob spec is inspected",
+          "then": "a volume named 'scripts' exists sourced from the script ConfigMap with DefaultMode 0555",
+          "and_then": [
+            "the main container has a volume mount for 'scripts' at /scripts/ (read-only)"
+          ]
+        },
+        {
+          "name": "CronJob command executes from mount path",
+          "when": "the main container command is inspected",
+          "then": "the command is ['/scripts/fernet_rotate.sh'] or ['/scripts/credential_rotate.sh'] respectively",
+          "and_then": [
+            "the inline 'sh -c <script>' pattern is no longer used"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "Rotation CronJobs SHALL produce identical runtime behavior after script extraction — same commands, same API calls, same error handling",
+      "priority": "SHALL",
+      "rationale": "Key rotation is the most security-critical operation; any behavioral change risks silent data loss or credential inaccessibility",
+      "scenarios": [
+        {
+          "name": "Fernet rotation behavior unchanged",
+          "when": "the fernet rotation CronJob executes",
+          "then": "it runs keystone-manage fernet_rotate, reads rotated keys, base64-encodes them, and PATCHes the Secret via K8s API",
+          "and_then": [
+            "all env vars (SECRET_NAME, SECRET_NAMESPACE, OS_fernet_tokens__max_active_keys) are unchanged",
+            "all volume mounts (fernet-keys, credential-keys, config) are still present"
+          ]
+        },
+        {
+          "name": "Credential rotation behavior unchanged",
+          "when": "the credential rotation CronJob executes",
+          "then": "it runs credential_rotate, credential_migrate, reads keys, base64-encodes them, and PATCHes the Secret",
+          "and_then": [
+            "all env vars (SECRET_NAME, SECRET_NAMESPACE, OS_credential__max_active_keys) are unchanged"
+          ]
+        },
+        {
+          "name": "Init container unchanged",
+          "when": "the CronJob pod starts",
+          "then": "the copy-keys init container still copies keys from the read-only Secret source to the writable emptyDir",
+          "and_then": [
+            "init container image, command, volume mounts, and security context are unchanged"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "shellcheck SHALL pass on all extracted rotation scripts without warnings",
+      "priority": "SHALL",
+      "rationale": "Shell linting catches common bugs (unquoted variables, incorrect error handling) that are invisible in Go string constants",
+      "scenarios": [
+        {
+          "name": "shellcheck passes on fernet_rotate.sh",
+          "when": "shellcheck is run on operators/keystone/internal/controller/scripts/fernet_rotate.sh",
+          "then": "shellcheck exits with status 0 and produces no warnings",
+          "and_then": [
+            "Python heredoc section is correctly skipped by shellcheck"
+          ]
+        },
+        {
+          "name": "shellcheck passes on credential_rotate.sh",
+          "when": "shellcheck is run on operators/keystone/internal/controller/scripts/credential_rotate.sh",
+          "then": "shellcheck exits with status 0 and produces no warnings",
+          "and_then": []
+        },
+        {
+          "name": "Makefile target runs shellcheck",
+          "when": "make shellcheck is executed",
+          "then": "shellcheck is run on all .sh files under operators/keystone/internal/controller/scripts/",
+          "and_then": [
+            "non-zero exit code if any script has warnings"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "Embedded script content SHALL be verified by Go unit tests to catch embedding errors and content drift",
+      "priority": "SHALL",
+      "rationale": "A broken go:embed directive or corrupted script file silently produces an empty variable, which would cause CronJob pods to fail at runtime",
+      "scenarios": [
+        {
+          "name": "Fernet script content is non-empty and valid",
+          "when": "the fernetRotateScript variable is inspected in a unit test",
+          "then": "it is non-empty, starts with #!/bin/sh, and contains 'fernet_rotate'",
+          "and_then": [
+            "it contains the Python heredoc with K8s API PATCH logic"
+          ]
+        },
+        {
+          "name": "Credential script content is non-empty and valid",
+          "when": "the credentialRotateScript variable is inspected in a unit test",
+          "then": "it is non-empty, starts with #!/bin/sh, and contains both 'credential_rotate' and 'credential_migrate'",
+          "and_then": [
+            "it contains the Python heredoc with K8s API PATCH logic"
+          ]
+        },
+        {
+          "name": "Scripts contain error handling",
+          "when": "the embedded scripts are inspected",
+          "then": "both scripts contain 'set -e' for shell error propagation",
+          "and_then": [
+            "both scripts contain Python error handling for HTTP response status >= 300"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "Script ConfigMaps SHOULD follow the {keystoneName}-{type}-rotate-script-{hash} naming convention consistent with existing ConfigMap patterns",
+      "priority": "SHOULD",
+      "rationale": "Consistent naming with the existing config ConfigMap pattern ({keystoneName}-config-{hash}) makes resource discovery and debugging predictable",
+      "scenarios": [
+        {
+          "name": "Fernet script ConfigMap name follows convention",
+          "when": "the fernet script ConfigMap is created",
+          "then": "its name matches the pattern {keystoneName}-fernet-rotate-script-{8-char-hex-hash}",
+          "and_then": [
+            "the hash suffix changes when script content changes"
+          ]
+        },
+        {
+          "name": "Credential script ConfigMap name follows convention",
+          "when": "the credential script ConfigMap is created",
+          "then": "its name matches the pattern {keystoneName}-credential-rotate-script-{8-char-hex-hash}",
+          "and_then": [
+            "the hash suffix is deterministic for the same script content"
+          ]
+        },
+        {
+          "name": "Different script content produces different ConfigMap names",
+          "when": "the operator is upgraded with modified script content",
+          "then": "CreateImmutableConfigMap produces a new name with a different hash suffix",
+          "and_then": [
+            "EnsureCronJob updates the CronJob to reference the new ConfigMap name"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create fernet_rotate.sh and credential_rotate.sh script files under scripts/ directory (REQ-001)",
+      "description": "Create operators/keystone/internal/controller/scripts/ directory. Extract the fernetRotateScript constant body from reconcile_fernet.go:35-56 into scripts/fernet_rotate.sh, prepending #!/bin/sh shebang. Extract credentialRotateScript from reconcile_credential.go:37-59 into scripts/credential_rotate.sh, prepending #!/bin/sh shebang. Ensure both files end with a newline. Verify with shellcheck.",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Replace const declarations with go:embed directives in reconcile_fernet.go and reconcile_credential.go (REQ-002)",
+      "description": "In reconcile_fernet.go: add '_ \"embed\"' import, replace 'const fernetRotateScript = `...`' with '//go:embed scripts/fernet_rotate.sh' + 'var fernetRotateScript string'. In reconcile_credential.go: same pattern for credentialRotateScript, also remove the //nolint:gosec G101 comment (no longer needed since go:embed vars don't trigger G101). Update comments above the variables to reference the file paths. Verify: go build ./operators/keystone/... succeeds, go vet passes.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Add Go unit tests verifying embedded script content and structure (REQ-007)",
+      "description": "In reconcile_fernet_test.go add TestFernetRotateScript_EmbeddedContent: verify fernetRotateScript is non-empty, starts with '#!/bin/sh', contains 'set -e', contains 'fernet_rotate', contains 'python3', contains 'Secret update failed'. In reconcile_credential_test.go add TestCredentialRotateScript_EmbeddedContent: same checks plus verify it contains both 'credential_rotate' and 'credential_migrate'. These tests guard against broken go:embed directives producing empty strings.",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Update reconcileFernetKeys to create script ConfigMap and modify fernetRotationCronJob builder (REQ-003, REQ-004)",
+      "description": "In reconcile_fernet.go: (1) Add config import for CreateImmutableConfigMap and ptr import for DefaultMode. (2) In reconcileFernetKeys, after RBAC setup and before CronJob creation, call config.CreateImmutableConfigMap to create a ConfigMap named '{name}-fernet-rotate-script' containing {'fernet_rotate.sh': fernetRotateScript}. Pass the returned scriptConfigMapName to fernetRotationCronJob. (3) Update fernetRotationCronJob signature to accept scriptConfigMapName string parameter. (4) Add 'scripts' volume sourced from scriptConfigMapName ConfigMap with DefaultMode ptr.To(int32(0555)). (5) Add VolumeMount {Name: 'scripts', MountPath: '/scripts', ReadOnly: true} to main container. (6) Change Command from []string{'sh', '-c', fernetRotateScript} to []string{'/scripts/fernet_rotate.sh'}.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Update fernet rotation tests for new CronJob structure (REQ-004, REQ-005)",
+      "description": "In reconcile_fernet_test.go: (1) Update TestReconcileFernetKeys_CronJobSpec: change Command assertion to []string{'/scripts/fernet_rotate.sh'}, update volume count from 4 to 5, update volume mount count from 3 to 4, add assertions for 'scripts' volume (ConfigMap source with name prefix 'test-keystone-fernet-rotate-script-', DefaultMode 0555), add assertion for '/scripts' volume mount (read-only). (2) Update TestReconcileFernetKeys_SecretAlreadyExists to verify script ConfigMap is created. (3) Verify all env vars, other volumes, init container, security context, labels assertions are unchanged. (4) Run tests: go test ./operators/keystone/internal/controller/ -run TestReconcileFernet.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-004",
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Update reconcileCredentialKeys to create script ConfigMap and modify credentialRotationCronJob builder (REQ-003, REQ-004)",
+      "description": "In reconcile_credential.go: mirror the changes from task 2.1. (1) Add config and ptr imports. (2) In reconcileCredentialKeys, create ConfigMap named '{name}-credential-rotate-script' containing {'credential_rotate.sh': credentialRotateScript}. (3) Update credentialRotationCronJob signature to accept scriptConfigMapName. (4) Add 'scripts' volume with DefaultMode 0555. (5) Add '/scripts' volume mount to main container. (6) Change Command to []string{'/scripts/credential_rotate.sh'}.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003",
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Update credential rotation tests for new CronJob structure (REQ-004, REQ-005)",
+      "description": "In reconcile_credential_test.go: mirror the changes from task 2.2. (1) Update TestReconcileCredentialKeys_CronJobSpec: change Command assertion, update volume/mount counts, add script volume assertions with 'test-keystone-credential-rotate-script-' prefix. (2) Update TestReconcileCredentialKeys_SecretAlreadyExists to verify script ConfigMap creation. (3) Verify credential_rotate and credential_migrate command verification is preserved (script content test, not CronJob command). (4) Run tests: go test ./operators/keystone/internal/controller/ -run TestReconcileCredential.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-004",
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Add Makefile shellcheck target for rotation scripts (REQ-006)",
+      "description": "In Makefile: add a 'shellcheck' target under a new 'Script Linting' section. Target runs: shellcheck operators/keystone/internal/controller/scripts/*.sh. Add .PHONY declaration. Add comment with CC-0073 reference. Verify: make shellcheck passes. The target should fail with non-zero exit if any script has warnings.",
+      "level": 4,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Reference documentation for rotation script ConfigMap pattern (CC-0073)",
+      "description": "Create docs/reference/backend/rotation-scripts.md documenting: (1) the go:embed pattern for rotation scripts, (2) the ConfigMap mounting approach with content-hash naming, (3) how to modify rotation scripts (edit .sh file, rebuild operator, ConfigMap auto-updates), (4) how to run shellcheck locally. Keep concise (<80 lines). Reference CC-0073 and existing CreateImmutableConfigMap pattern.",
+      "level": 4,
+      "estimate_minutes": 10
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotateScript_EmbeddedContent_NonEmpty",
+      "story": "Developer can lint and test rotation scripts independently",
+      "expected": "fernetRotateScript variable should be non-empty after go:embed (guards against broken embed directive)",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_EmbeddedContent_NonEmpty",
+      "story": "Developer can lint and test rotation scripts independently",
+      "expected": "credentialRotateScript variable should be non-empty after go:embed",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotateScript_EmbeddedContent_HasShebang",
+      "story": "Developer can lint and test rotation scripts independently",
+      "expected": "fernetRotateScript should start with #!/bin/sh for POSIX shell compatibility",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_EmbeddedContent_HasShebang",
+      "story": "Developer can lint and test rotation scripts independently",
+      "expected": "credentialRotateScript should start with #!/bin/sh",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_SecretAlreadyExists (updated)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "After reconciliation, a script ConfigMap should exist in the namespace with name prefix 'test-keystone-fernet-rotate-script-'",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_SecretAlreadyExists (updated)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "After reconciliation, a script ConfigMap should exist with name prefix 'test-keystone-credential-rotate-script-'",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec (updated - script volume)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "CronJob should have 5 volumes including 'scripts' volume sourced from script ConfigMap with DefaultMode 0555",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec (updated - script mount)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "Main container should have 4 volume mounts including '/scripts' (read-only)",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec (updated - script volume)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "CronJob should have 5 volumes including 'scripts' volume with DefaultMode 0555",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec (updated - script mount)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "Main container should have 4 volume mounts including '/scripts' (read-only)",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec (updated - command)",
+      "story": "Operator user sees identical rotation behavior after extraction",
+      "expected": "Main container Command should be ['/scripts/fernet_rotate.sh'] instead of ['sh', '-c', fernetRotateScript]",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec (updated - command)",
+      "story": "Operator user sees identical rotation behavior after extraction",
+      "expected": "Main container Command should be ['/scripts/credential_rotate.sh']",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec (updated - env vars unchanged)",
+      "story": "Operator user sees identical rotation behavior after extraction",
+      "expected": "All 3 env vars (SECRET_NAME, SECRET_NAMESPACE, OS_fernet_tokens__max_active_keys) remain unchanged",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec (updated - env vars unchanged)",
+      "story": "Operator user sees identical rotation behavior after extraction",
+      "expected": "All 3 env vars (SECRET_NAME, SECRET_NAMESPACE, OS_credential__max_active_keys) remain unchanged",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetRotateScript_EmbeddedContent_ContainsExpectedCommands",
+      "story": "Security auditor can independently verify rotation logic",
+      "expected": "fernetRotateScript contains 'fernet_rotate', 'set -e', 'python3', 'Secret update failed', and K8s API PATCH logic",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialRotateScript_EmbeddedContent_ContainsExpectedCommands",
+      "story": "Security auditor can independently verify rotation logic",
+      "expected": "credentialRotateScript contains 'credential_rotate', 'credential_migrate', 'set -e', 'python3', and K8s API PATCH logic",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestReconcileFernetKeys_CronJobSpec (updated - script ConfigMap naming)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "Script volume ConfigMap name starts with 'test-keystone-fernet-rotate-script-' followed by 8 hex characters",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestReconcileCredentialKeys_CronJobSpec (updated - script ConfigMap naming)",
+      "story": "Rotation CronJobs execute scripts from mounted ConfigMaps",
+      "expected": "Script volume ConfigMap name starts with 'test-keystone-credential-rotate-script-' followed by 8 hex characters",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/scripts/fernet_rotate.sh",
+      "test_function": "shellcheck fernet_rotate.sh (Makefile target)",
+      "story": "CI validates shell script quality via shellcheck",
+      "expected": "shellcheck exits 0 with no warnings on fernet_rotate.sh; Python heredoc section correctly skipped",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/scripts/credential_rotate.sh",
+      "test_function": "shellcheck credential_rotate.sh (Makefile target)",
+      "story": "CI validates shell script quality via shellcheck",
+      "expected": "shellcheck exits 0 with no warnings on credential_rotate.sh",
+      "requirement_id": "REQ-006"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "Both scripts pass shellcheck without warnings (make shellcheck exits 0)",
+    "go vet and golangci-lint pass for all modified files (no new lint errors introduced)",
+    "All existing unit tests pass — only expected assertion values change (Command, volume/mount counts, new volume)",
+    "CronJob spec diff shows ONLY: added 'scripts' volume+mount, changed Command — all other fields (env, image, schedule, RBAC, security context) unchanged",
+    "CreateImmutableConfigMap from internal/common/config is used for script ConfigMaps (not raw corev1.ConfigMap creation)",
+    "restrictedSecurityContext() still applied to all init and main containers (no security regression)",
+    "Script file content is byte-identical to original Go constant bodies (plus #!/bin/sh shebang prepended)",
+    "Reference documentation exists in docs/reference/backend/rotation-scripts.md explaining the go:embed + ConfigMap pattern"
+  ],
+  "implementation_notes": "## Architecture\n\nThis is a pure refactoring that extracts inline Go string constants into standalone script files, embeds them via go:embed, and delivers them as ConfigMap volumes. No behavioral change to rotation logic.\n\n## Data Flow\n\n```\nscripts/fernet_rotate.sh (on disk)\n  -> //go:embed (compile time) -> fernetRotateScript (Go string var)\n  -> CreateImmutableConfigMap (reconcile time) -> ConfigMap with content-hash name\n  -> CronJob volume mount -> /scripts/fernet_rotate.sh (pod runtime)\n  -> Container executes /scripts/fernet_rotate.sh\n```\n\n## Key Design Decisions\n\n1. **go:embed per file**: Each reconcile_*.go file embeds its own script via `//go:embed scripts/*.sh` + `var ... string`. This keeps the embedding colocated with usage.\n\n2. **Immutable ConfigMaps with content-hash**: Reuses existing `config.CreateImmutableConfigMap()` (internal/common/config/config.go:130) which handles hash-suffixed naming, ownership, and AlreadyExists verification. When script content changes (operator upgrade), a new ConfigMap name is generated, the CronJob spec changes, and `job.EnsureCronJob` updates it.\n\n3. **DefaultMode 0555**: Script ConfigMap volumes use `DefaultMode: ptr.To(int32(0555))` to make scripts executable. This allows `Command: []string{\"/scripts/fernet_rotate.sh\"}` without explicit shell invocation.\n\n4. **One ConfigMap per script**: Each reconciler creates its own script ConfigMap. This keeps resource ownership clean and avoids coupling fernet and credential rotation versioning.\n\n5. **Shebang addition**: Scripts get `#!/bin/sh` shebangs (not in original constants) for proper shellcheck support and standalone execution.\n\n## Patterns to Follow\n\n- ConfigMap creation: reconcile_config.go:168-184 (CreateImmutableConfigMap call)\n- Volume mounting: reconcile_fernet.go:307-316 (ConfigMap volume pattern)\n- CronJob management: job.EnsureCronJob (job.go:119) handles create/update\n- Test pattern: Gomega + fake client (reconcile_fernet_test.go)\n- ptr.To() usage: reconcile_deployment.go uses k8s.io/utils/ptr\n\n## Potential Pitfalls\n\n1. **go:embed path resolution**: Paths are relative to the source file's package directory (operators/keystone/internal/controller/). The scripts/ subdirectory must be at that level.\n\n2. **CronJob spec hash change**: Adding the scripts volume changes the CronJob spec. EnsureCronJob will update existing CronJobs on the next reconcile after operator upgrade. This is expected and correct.\n\n3. **nolint removal**: credentialRotateScript had `//nolint:gosec // G101` because the const name contained 'credential'. With go:embed, the variable declaration has no string literal, so G101 doesn't trigger. Verify with `golangci-lint run`.\n\n4. **Empty embed variable**: If the go:embed directive path is wrong, the variable silently stays empty string. Task 1.3 adds explicit tests to catch this.\n\n## Deferred Items\n\n- **Script refactoring to share common Python K8s API code**: Both scripts have identical Python PATCH logic. Extracting a shared update_secret.py would reduce duplication but changes script logic (out of scope for extraction-only refactoring). Revisit in a future feature.\n- **pylint/flake8 on Python portions**: Python code is embedded in shell heredocs, making standalone Python linting complex. Would require extracting Python to separate files — a larger refactoring. Revisit if Python logic grows.\n- **Integration test with mock K8s API**: Testing the actual script execution against a mock API server would provide end-to-end script verification. Requires test infrastructure setup beyond current scope. Existing Chainsaw E2E tests cover this path.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T19:11:52.392120"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T19:11:52.749992"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-13T19:23:03.316568"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "38e5fa03-e4c2-4069-b065-8d8e6d3b1b9e",
+      "timestamp": "2026-04-13T19:23:03.316609",
+      "total_duration": 667.1785504817963,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 667.1785504817963,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
