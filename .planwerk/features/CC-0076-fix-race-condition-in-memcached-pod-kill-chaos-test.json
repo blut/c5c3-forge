@@ -1,0 +1,276 @@
+{
+  "feature_id": "CC-0076",
+  "title": "Fix race condition in memcached-pod-kill chaos test",
+  "slug": "fix-race-condition-in-memcached-pod-kill-chaos-test",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #214: Fix race condition in memcached-pod-kill chaos test that causes flaky failures\n\n**Category**: bug | **Scope**: Small\n\n**Description**: The `keystone-memcached-pod-kill` chaos test in `tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml` races with Chaos Mesh pod deletion and fails non-deterministically. In step-4 the test uses `wait` with a label selector to confirm the killed pod becomes `Ready=false` before asserting Keystone stays `Ready=True`. chainsaw/kubectl `wait` resolves the label selector once up front, grabs the doomed pod (e.g. `openstack-memcached-75845cbcd5-ht4h9`), and watches that specific object. When Chaos Mesh deletes the pod mid-wait, the watch errors with `Error from server (NotFound): pods \"openstack-memcached-75845cbcd5-ht4h9\" not found` instead of re-resolving the selector onto the replacement pod the ReplicaSet immediately creates. Observed in run https://github.com/C5C3/forge/actions/runs/24412091069/job/71314792352: the replacement pod `openstack-memcached-75845cbcd5-ptznn` was already `Scheduled`/`Created`/`Started` within the same second (visible in the event dump), the memcached-operator Deployment was healthy, and the Keystone CR ended the test with `Ready=True/AllReady` — confirming this is a test-only race, not an operator regression. The `NOTE` block at lines 50-56 of `chainsaw-test.yaml` already anticipates this race, but the documented mitigation (\"pod-kill with gracePeriod:0 plus controller restart takes multiple seconds\") does not hold in practice — the Pending→Scheduled→Created transition for the replacement pod happens at the same timestamp as the delete.\n\n**Motivation**: The `keystone-mariadb-pod-kill` and `keystone-openbao-pod-kill` tests in the same suite pass reliably because they assert on Keystone CR sub-conditions (e.g. `DatabaseReady=False`), which chainsaw retries internally until they match. The memcached test cannot use that pattern by design — cache outages are treated as performance degradation only and must not flip any Keystone condition (CC-0047, SC-CHAOS-002). The current workaround (pod-level `Ready=false` wait) introduces a structural race that produces false negatives in CI, blocks the chaos test suite (issue #165), and hides real regressions in the noise.\n\n**Affected Areas**:\n- `tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml`\n\n**Acceptance Criteria**:\n- [ ] `keystone-memcached-pod-kill` no longer relies on `wait` with `condition: Ready=false` against a label selector that matches the pod being deleted\n- [ ] The chaos effect is verified via a mechanism that is resilient to pod replacement, e.g. asserting on `Deployment.status.unavailableReplicas > 0` or on a `Pod` UID/`resourceVersion` change, both of which chainsaw retries\n- [ ] Alternatively, the `Ready=false` wait is dropped entirely and the test relies only on the subsequent `Ready=true` wait plus the Keystone `AllReady` assertion — which is sufficient to validate the test's actual goal (memcached failures do not degrade Keystone)\n- [ ] The `NOTE` block at lines 50-56 is removed or rewritten to reflect the new approach\n- [ ] The test passes on three consecutive CI runs of `.github/workflows/ci.yaml` (e2e-chaos job)\n- [ ] No change is required in the memcached-operator repository — this is a pure test fix\n\n**Labels:** bug\n\n---\nSource: https://github.com/C5C3/forge/issues/214",
+  "stories": [
+    {
+      "title": "CI engineer gets reliable memcached-pod-kill chaos test results",
+      "role": "CI engineer",
+      "want": "the keystone-memcached-pod-kill chaos test to pass deterministically without flaky NotFound errors from kubectl wait racing with pod deletion",
+      "so_that": "CI results accurately reflect operator behavior and flaky failures do not block the chaos test suite or hide real regressions",
+      "criteria": [
+        "Test passes when pod replacement happens within the same second as pod deletion (the observed race scenario from GitHub Actions run 24412091069)",
+        "Test does not use chainsaw wait with condition=Ready=false on Pods matching a label selector that targets the pod being deleted",
+        "Test uses Deployment-level readyReplicas polling instead of Pod-level condition watching, following the operator-pod-crash and api-pod-kill-pdb patterns",
+        "Test passes on three consecutive CI runs of the e2e-chaos job"
+      ]
+    },
+    {
+      "title": "CI engineer can verify chaos injection took effect before operator assertions",
+      "role": "CI engineer",
+      "want": "the test to confirm that Chaos Mesh actually killed a memcached pod before asserting Keystone operator conditions",
+      "so_that": "a Chaos Mesh misconfiguration (selector not matching any pods) does not produce a false-positive test pass",
+      "criteria": [
+        "The script polls the memcached Deployment readyReplicas and detects the drop below desired replicas (Phase 1)",
+        "The script explicitly fails with ERROR and prints current readyReplicas if chaos did not take effect within the poll timeout",
+        "The script explicitly fails with ERROR if memcached does not recover within the recovery timeout (Phase 2)"
+      ]
+    },
+    {
+      "title": "Test maintainer finds documentation consistent with test implementation",
+      "role": "test maintainer",
+      "want": "the chaos-e2e-tests reference documentation to accurately describe the memcached-pod-kill step-4 mechanics after the race condition fix",
+      "so_that": "developers modifying or debugging the test can trust the documentation",
+      "criteria": [
+        "docs/reference/chaos-e2e-tests.md memcached-pod-kill step table reflects script-based Deployment polling instead of Pod-level wait",
+        "The Design note is updated to reference CC-0076 and the Deployment-level approach",
+        "The NOTE block about theoretical race and initial-sleep mitigation is no longer referenced"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "Step-4 SHALL NOT use chainsaw wait with condition=Ready=false on Pods matching a label selector that targets the pod being deleted by Chaos Mesh",
+      "priority": "SHALL",
+      "rationale": "kubectl wait resolves the label selector once at query time, watches the specific pod object, and errors with NotFound when Chaos Mesh deletes the pod mid-watch — this is the root cause of the observed race condition (issue #214)",
+      "scenarios": [
+        {
+          "name": "Pod deleted during observation window does not cause NotFound",
+          "when": "Chaos Mesh kills the memcached pod and the ReplicaSet creates a replacement within the same second",
+          "then": "the test does not error with 'pods not found' because it watches the Deployment object (which persists), not individual Pod objects",
+          "and_then": [
+            "the test continues to the Keystone condition assertions"
+          ]
+        },
+        {
+          "name": "No wait operations on pods via label selector in step 4",
+          "when": "the chainsaw-test.yaml is inspected",
+          "then": "step 4 contains no wait sub-steps with kind=Pod and a label selector",
+          "and_then": [
+            "the wait condition=Ready=true on Pods is also removed and replaced by the script"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "Step-4 SHALL verify chaos took effect via Deployment-level readyReplicas polling, resilient to pod replacement",
+      "priority": "SHALL",
+      "rationale": "Deployment.status.readyReplicas aggregates all pod states and the Deployment object persists through pod replacements. The operator-pod-crash (lines 62-74) and api-pod-kill-pdb (lines 79-91) tests use this proven pattern.",
+      "scenarios": [
+        {
+          "name": "Chaos effect detected via readyReplicas drop",
+          "when": "Chaos Mesh kills a memcached pod and the Deployment readyReplicas drops below desired",
+          "then": "the script detects the drop within the poll timeout and logs a confirmation message",
+          "and_then": [
+            "the script proceeds to Phase 2 (recovery polling)"
+          ]
+        },
+        {
+          "name": "Chaos effect not detected within timeout",
+          "when": "the pod kill does not take effect (e.g., Chaos Mesh misconfiguration) and readyReplicas stays at desired",
+          "then": "the script exits with ERROR and prints the current readyReplicas",
+          "and_then": [
+            "the catch block runs diagnostics.sh for troubleshooting"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "Step-4 SHALL verify memcached Deployment recovery (readyReplicas returns to desired) before asserting Keystone conditions",
+      "priority": "SHALL",
+      "rationale": "Confirming recovery ensures the Keystone assertions run against a stable cluster state. Both operator-pod-crash and api-pod-kill-pdb follow this two-phase pattern.",
+      "scenarios": [
+        {
+          "name": "Recovery detected via readyReplicas return",
+          "when": "the replacement memcached pod passes readiness and readyReplicas returns to desired",
+          "then": "the script logs a confirmation and exits 0",
+          "and_then": [
+            "the Keystone condition assert sub-step runs"
+          ]
+        },
+        {
+          "name": "Recovery timeout",
+          "when": "readyReplicas does not return to desired within the recovery poll timeout",
+          "then": "the script exits with ERROR and prints the current readyReplicas",
+          "and_then": [
+            "the catch block runs diagnostics.sh"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "Step-4 SHALL assert all 6 Keystone conditions remain True (SecretsReady, FernetKeysReady, DatabaseReady, DeploymentReady, BootstrapReady, Ready=AllReady) after memcached pod kill — unchanged from the original test",
+      "priority": "SHALL",
+      "rationale": "This is the test's primary assertion — memcached failures are treated as performance degradation only and must not flip any Keystone condition (CC-0047, SC-CHAOS-002)",
+      "scenarios": [
+        {
+          "name": "All 6 conditions remain True during memcached outage",
+          "when": "a memcached pod is killed and replaced",
+          "then": "the Keystone CR shows all 6 conditions as True with Ready reason AllReady",
+          "and_then": []
+        },
+        {
+          "name": "Assert block is identical to original",
+          "when": "the assert sub-step in step 4 is compared to the original test",
+          "then": "the 6-condition JMESPath assertions are preserved verbatim",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The NOTE block (original lines 49-53) SHALL be removed and the step-4 comment SHALL describe the Deployment-level polling approach with CC-0076 reference",
+      "priority": "SHALL",
+      "rationale": "The NOTE described a theoretical race with a mitigation (initial sleep) that failed in practice. The Deployment-level approach eliminates the race, making the NOTE obsolete.",
+      "scenarios": [
+        {
+          "name": "NOTE block removed",
+          "when": "the test YAML is inspected",
+          "then": "there is no comment block describing a theoretical race or suggesting an initial sleep mitigation",
+          "and_then": []
+        },
+        {
+          "name": "New comment describes approach",
+          "when": "the step-4 comment block is read",
+          "then": "it explains Deployment-level readyReplicas polling, references CC-0076 and issue #214, and notes the pattern origin (operator-pod-crash / api-pod-kill-pdb)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "docs/reference/chaos-e2e-tests.md SHALL reflect the updated step-4 mechanics for the memcached-pod-kill test suite",
+      "priority": "SHALL",
+      "rationale": "Documentation must match the actual test implementation for maintainability. Step 4 description and Design note currently reference Pod-level wait operations that no longer exist.",
+      "scenarios": [
+        {
+          "name": "Step table updated",
+          "when": "the memcached-pod-kill steps table (line 198) is read",
+          "then": "step 4 describes script-based Deployment readyReplicas polling instead of wait (2m) + assert (5m)",
+          "and_then": []
+        },
+        {
+          "name": "Design note updated",
+          "when": "the Design note below the steps table (lines 208-210) is read",
+          "then": "it describes the Deployment-level polling approach and references the race condition fix (CC-0076)",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Replace step-4 wait operations with Deployment-level readyReplicas polling script in chainsaw-test.yaml (REQ-001, REQ-002, REQ-003, REQ-004, REQ-005)",
+      "description": "In tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml step 4: (1) Replace the step-4 comment block (lines 44-48) and NOTE block (lines 49-53) with a new comment explaining Deployment-level polling, referencing CC-0076/issue #214 and the operator-pod-crash/api-pod-kill-pdb pattern. (2) Replace the two wait sub-steps (lines 54-72: wait Ready=false then wait Ready=true on Pods) with a single script sub-step that follows the operator-pod-crash pattern (lines 54-85 of operator-pod-crash/chainsaw-test.yaml): Phase 1 polls readyReplicas dropping below desired (chaos confirmed), Phase 2 polls readyReplicas returning to desired (recovery confirmed). Use the memcached Deployment name openstack-memcached in $NAMESPACE. Omit set -euo pipefail (same rationale as operator-pod-crash: ${READY:-0} defaults are incompatible with set -e). Use 120s script timeout. (3) Keep the existing assert sub-step (lines 73-93: all 6 Keystone conditions) and catch block (lines 94-96) completely unchanged.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Update docs/reference/chaos-e2e-tests.md memcached-pod-kill section to reflect new step-4 approach (REQ-006)",
+      "description": "In docs/reference/chaos-e2e-tests.md: (1) Update the memcached-pod-kill step 4 row in the steps table (line 198) — change Type from 'wait (2m) + assert (5m)' to 'script (120s) + assert (5m)' and update Details to describe Deployment readyReplicas polling for chaos confirmation and recovery, followed by all 6 condition assertions. (2) Update the Design note (lines 208-210) to describe the Deployment-level approach, reference CC-0076, and explain why Pod-level wait was replaced (label-selector race with pod deletion).",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-006"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml",
+      "test_function": "step-4 script Phase 1: readyReplicas drop detection",
+      "story": "CI engineer can verify chaos injection took effect before operator assertions",
+      "expected": "[e2e] Script polls memcached Deployment readyReplicas via kubectl jsonpath and detects the drop below desired within 60s (30 iterations * 2s). Exits with ERROR if readyReplicas never drops.",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml",
+      "test_function": "step-4 script Phase 2: readyReplicas recovery detection",
+      "story": "CI engineer gets reliable memcached-pod-kill chaos test results",
+      "expected": "[e2e] Script polls memcached Deployment readyReplicas and detects recovery to desired within 120s (60 iterations * 2s). Exits 0 on recovery, exits 1 with ERROR on timeout.",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml",
+      "test_function": "step-4 assert: all 6 Keystone conditions True",
+      "story": "CI engineer gets reliable memcached-pod-kill chaos test results",
+      "expected": "[e2e] Chainsaw assert retries until all 6 Keystone conditions (SecretsReady, FernetKeysReady, DatabaseReady, DeploymentReady, BootstrapReady, Ready=AllReady) match True, within the 5m assert timeout. Identical to original test assertions.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml",
+      "test_function": "step-4 full flow: no NotFound error during pod replacement race",
+      "story": "CI engineer gets reliable memcached-pod-kill chaos test results",
+      "expected": "[e2e] When the replacement memcached pod is created within the same second as the original pod deletion, the test passes without any 'pods not found' errors — because the script watches the Deployment object (which persists), not individual Pod objects.",
+      "requirement_id": "REQ-001"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "No chainsaw wait sub-steps with kind=Pod exist in step 4 of the modified chainsaw-test.yaml (REQ-001)",
+    "The script follows the operator-pod-crash Deployment readyReplicas polling pattern: Phase 1 polls readyReplicas dropping, Phase 2 polls readyReplicas returning, using ${READY:-0} defensive defaults and explicit error messages (REQ-002, REQ-003)",
+    "All 6 Keystone condition assertions in the step-4 assert sub-step are preserved verbatim from the original test (REQ-004)",
+    "The NOTE block about theoretical race and initial-sleep mitigation is removed, and the step-4 comment references CC-0076 (REQ-005)",
+    "docs/reference/chaos-e2e-tests.md memcached-pod-kill step table and Design note accurately describe the new Deployment-level approach (REQ-006)",
+    "No files outside tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml and docs/reference/chaos-e2e-tests.md are modified"
+  ],
+  "implementation_notes": "Architecture decision: Replace Pod-level chainsaw wait (which resolves label selectors to specific pod objects at query time) with Deployment-level readyReplicas polling (which watches the persistent Deployment object). This is the same pattern used by operator-pod-crash/chainsaw-test.yaml:54-85 and api-pod-kill-pdb/chainsaw-test.yaml:72-98.\n\nData flow after fix:\n1. Step 3: PodChaos applied -> Chaos Mesh kills one memcached pod\n2. Step 4, Phase 1: Script polls Deployment.status.readyReplicas -> detects drop (chaos confirmed)\n3. Step 4, Phase 2: ReplicaSet creates replacement -> replacement passes readiness -> readyReplicas returns\n4. Step 4, Assert: All 6 Keystone conditions asserted True (no-regression pattern)\n5. Step 5: PodChaos deleted\n6. Step 6: Final Keystone AllReady assertion\n\nPotential pitfalls:\n- Do NOT use set -euo pipefail — ${READY:-0} pattern fails under set -e when kubectl returns empty output (documented in operator-pod-crash comment block)\n- Use the Deployment name openstack-memcached (from pod name openstack-memcached-75845cbcd5-ht4h9 and cache.clusterRef.name in 00-keystone-cr.yaml)\n- Script timeout (120s) must cover both Phase 1 (30 iterations * 2s = 60s max) and Phase 2 (60 iterations * 2s = 120s max)\n- Keep the assert sub-step and catch block completely unchanged — only the wait operations and comments change\n\nDeferred items:\n- Investigate if any other chaos tests have similar wait-on-Pod races (operator-pod-crash already uses Deployment polling, so no issue there)\n- Upstream contribution to chainsaw/kubectl to support label-selector re-resolution in wait command\n- Consider adding a CI retry mechanism for chaos tests as an additional reliability layer",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T18:00:17.166300"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T18:00:17.426303"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-14T18:10:58.230617"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "dd444d66-3b06-413c-9197-ff43198d5a88",
+      "timestamp": "2026-04-14T18:10:58.230643",
+      "total_duration": 634.1622948646545,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 634.1622948646545,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
