@@ -1,0 +1,968 @@
+{
+  "feature_id": "CC-0089",
+  "title": "Add Prometheus metrics and ServiceMonitor sub-reconciler",
+  "slug": "add-prometheus-metrics-and-servicemonitor-sub",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #122: Add Prometheus metrics and ServiceMonitor sub-reconciler\n\n**Description**: Register custom Prometheus collectors in the Keystone operator: reconciliation duration histograms per sub-reconciler, reconciliation error counters by condition type, fernet/credential key rotation age gauges (last rotation timestamp), and database sync job duration/failure counters. Add a ServiceMonitor CR emitted by a sub-reconciler or Helm template so Prometheus auto-discovers the operator metrics endpoint on port 8080.\n\n**Motivation**: The operator has a metrics port (8080) configured in the Helm chart but emits no custom metrics. For production operational visibility, operators need to monitor reconciliation health, detect degraded conditions, and alert on key rotation failures. Without metrics, operators are flying blind.\n\n**Affected Areas**:\n- `operators/keystone/internal/controller/keystone_controller.go`\n- `operators/keystone/internal/controller/reconcile_deployment.go`\n- `operators/keystone/internal/controller/reconcile_secrets.go`\n- `operators/keystone/helm/keystone-operator/templates/`\n\n**Acceptance Criteria**:\n- [ ] Reconciliation duration histogram registered per sub-reconciler\n- [ ] Error counter by condition type incremented on failures\n- [ ] Fernet/credential key age gauges expose last rotation timestamps\n- [ ] ServiceMonitor template added to Helm chart (opt-in via values.yaml)\n- [ ] Metrics endpoint verified accessible on port 8080\n- [ ] Grafana dashboard JSON or mixin provided as documentation\n\n---\nSource: https://github.com/C5C3/forge/issues/122",
+  "stories": [
+    {
+      "title": "Cluster operator observes reconciliation health via Prometheus",
+      "role": "cluster operator",
+      "want": "per-sub-reconciler duration histograms and error counters exported by the Keystone operator (CC-0089)",
+      "so_that": "I can detect slow or failing reconciliation phases (e.g. FernetKeysReady, DatabaseReady) and alert before the OpenStack control plane degrades",
+      "criteria": [
+        "GET to http://<operator-pod>:8080/metrics returns a 200 with at least one keystone_operator_reconcile_duration_seconds_* sample (CC-0089, REQ-001)",
+        "Each sub-reconciler listed in subConditionTypes contributes a labelled time series with label sub_reconciler=<name> (CC-0089, REQ-001)",
+        "Histogram buckets cover the expected latency range (10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s) so p50/p95/p99 are computable by PromQL (CC-0089, REQ-001)",
+        "A reconciliation that returns an error increments keystone_operator_reconcile_errors_total{sub_reconciler=<name>,condition_type=<type>} exactly once (CC-0089, REQ-002)",
+        "A reconciliation that returns ctrl.Result{} with err == nil does NOT increment the error counter (CC-0089, REQ-002)"
+      ]
+    },
+    {
+      "title": "Security operator monitors fernet/credential key rotation freshness",
+      "role": "security operator",
+      "want": "Prometheus gauges that expose the age in seconds since the last successful fernet and credential key rotation for every Keystone CR (CC-0089)",
+      "so_that": "I can configure alerts when rotation has not occurred within the configured rotation_interval, catching silent CronJob failures before credentials become stale",
+      "criteria": [
+        "keystone_operator_key_rotation_age_seconds{keystone=<name>,namespace=<ns>,key_type=fernet} is emitted with the age derived from the forge.c5c3.io/rotation-completed-at annotation on the staging Secret (CC-0089, REQ-003)",
+        "keystone_operator_key_rotation_age_seconds{keystone=<name>,namespace=<ns>,key_type=credential} is emitted with identical semantics (CC-0089, REQ-003)",
+        "When no rotation has ever completed (annotation absent or unparseable), the gauge is NOT set — PromQL absent(...) is the operator alert signal (CC-0089, REQ-003)",
+        "Gauge value refreshes on every successful reconcile of the parent Keystone CR so age tracks wall-clock correctly (CC-0089, REQ-003)",
+        "Deleting a Keystone CR removes the associated time series within one reconcile of the delete event (CC-0089, REQ-004)"
+      ]
+    },
+    {
+      "title": "SRE tracks database sync job health for upgrade risk management",
+      "role": "SRE",
+      "want": "counters for db_sync Job completions and failures plus a histogram of db_sync Job duration (CC-0089)",
+      "so_that": "I can alert on repeated db_sync failures during upgrade windows and track drift between expected and actual migration duration",
+      "criteria": [
+        "keystone_operator_db_sync_total{keystone=<name>,namespace=<ns>,result=succeeded|failed} increments exactly once per Job terminal state transition (CC-0089, REQ-005)",
+        "keystone_operator_db_sync_duration_seconds histogram records the wall time from Job create to terminal condition (CC-0089, REQ-005)",
+        "Transient in-progress reconciles do NOT increment the counter — only the transition to Complete or Failed does (CC-0089, REQ-005)",
+        "Labels match other operator metrics (keystone, namespace) for consistent PromQL joins (CC-0089, REQ-005)"
+      ]
+    },
+    {
+      "title": "Cluster operator opts into ServiceMonitor scraping via Helm",
+      "role": "cluster operator",
+      "want": "a ServiceMonitor template shipped by the keystone-operator Helm chart, gated by monitoring.serviceMonitor.enabled (CC-0089)",
+      "so_that": "Prometheus Operator auto-discovers the metrics endpoint without me authoring ServiceMonitor YAML by hand, while clusters without prometheus-operator-crds installed are unaffected",
+      "criteria": [
+        "helm template with monitoring.serviceMonitor.enabled=true produces a ServiceMonitor of apiVersion monitoring.coreos.com/v1 (CC-0089, REQ-006)",
+        "helm template with monitoring.serviceMonitor.enabled=false produces zero ServiceMonitor objects (CC-0089, REQ-006)",
+        "The rendered ServiceMonitor selects the operator Service by selectorLabels and scrapes port 'metrics' at path '/metrics' (CC-0089, REQ-006)",
+        "values.schema.json validates monitoring.serviceMonitor.enabled as a boolean and monitoring.serviceMonitor.interval as a duration string (CC-0089, REQ-006)",
+        "The default value of monitoring.serviceMonitor.enabled is false — opt-in, never opt-out (CC-0089, REQ-006)"
+      ]
+    },
+    {
+      "title": "Keystone operator developer instruments a new sub-reconciler",
+      "role": "Keystone operator developer",
+      "want": "a single well-documented instrumentation entry point that wraps any sub-reconciler with timing and error counting (CC-0089)",
+      "so_that": "adding a future sub-reconciler (e.g. CC-0090) requires exactly one line change and cannot forget to emit metrics",
+      "criteria": [
+        "A helper func (r *KeystoneReconciler) instrumentSubReconciler(ctx, name, fn) (ctrl.Result, error) exists and is used by every sub-reconciler invocation in Reconcile (CC-0089, REQ-007)",
+        "The helper is covered by a unit test that records call counts against a test registry (CC-0089, REQ-007)",
+        "docs/reference/keystone-reconciler.md contains a section 'Metrics Instrumentation' explaining the helper and naming convention (CC-0089, REQ-009)",
+        "A unit test asserts the metric names and label sets match the documented contract to prevent accidental renames (CC-0089, REQ-007)"
+      ]
+    },
+    {
+      "title": "Operator reads a reference doc for the exported metrics",
+      "role": "SRE",
+      "want": "reference documentation listing every metric name, type, labels, and buckets exported by the Keystone operator (CC-0089)",
+      "so_that": "I can author dashboards and alerting rules against a stable contract",
+      "criteria": [
+        "docs/reference/keystone-operator-metrics.md exists and lists: metric name, type (counter/histogram/gauge), labels with cardinality notes, bucket layout, semantic meaning (CC-0089, REQ-009)",
+        "Doc includes the ServiceMonitor enablement snippet for Helm values (CC-0089, REQ-009)",
+        "Doc links the Grafana dashboard JSON artefact shipped with the release (CC-0089, REQ-010)",
+        "Doc is linked from docs/guides/observability.md (CC-0089, REQ-009)"
+      ]
+    },
+    {
+      "title": "Operator imports a starter Grafana dashboard",
+      "role": "SRE",
+      "want": "a ready-to-import Grafana dashboard JSON committed alongside the operator (CC-0089)",
+      "so_that": "I get a working visualisation the day I enable ServiceMonitor scraping, without having to design panels from scratch",
+      "criteria": [
+        "operators/keystone/dashboards/keystone-operator.json exists and parses as valid Grafana dashboard JSON (CC-0089, REQ-010)",
+        "Dashboard contains at minimum: reconcile duration p95 per sub-reconciler, reconcile error rate per condition type, key rotation age per Keystone, db_sync duration and failure count (CC-0089, REQ-010)",
+        "Dashboard uses only metrics defined in this feature — no undefined or speculative series (CC-0089, REQ-010)",
+        "docs/how-to/enable-keystone-operator-metrics.md shows the import command (CC-0089, REQ-011)"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The operator SHALL expose a keystone_operator_reconcile_duration_seconds histogram labelled by sub_reconciler for every sub-reconciler invocation on the main Reconcile path",
+      "priority": "SHALL",
+      "rationale": "Per-phase latency is the primary signal for detecting degraded reconciliation; aggregating under a single controller-level metric loses the ability to pinpoint which phase is slow",
+      "scenarios": [
+        {
+          "name": "Successful sub-reconciler observation",
+          "when": "reconcileFernetKeys returns (ctrl.Result{}, nil) after 42ms",
+          "then": "one observation is recorded in keystone_operator_reconcile_duration_seconds{sub_reconciler=\"FernetKeys\"} with value approximately 0.042",
+          "and_then": [
+            "the 0.05 bucket counter increments by 1",
+            "the 0.1, 0.25 ... +Inf bucket counters also increment by 1 (cumulative histogram)"
+          ]
+        },
+        {
+          "name": "Errored sub-reconciler still observed",
+          "when": "reconcileDatabase returns (ctrl.Result{}, errors.New(\"boom\")) after 120ms",
+          "then": "an observation is still recorded in the duration histogram for sub_reconciler=\"Database\"",
+          "and_then": [
+            "duration is measured via defer so early return does not skip emission"
+          ]
+        },
+        {
+          "name": "Bucket layout matches documented contract",
+          "when": "the histogram is registered",
+          "then": "buckets are exactly [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30] seconds",
+          "and_then": [
+            "the documented contract in docs/reference/keystone-operator-metrics.md matches the registered buckets exactly"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The operator SHALL increment keystone_operator_reconcile_errors_total with labels sub_reconciler and condition_type exactly once per errored sub-reconciler invocation",
+      "priority": "SHALL",
+      "rationale": "Counting errors by condition type lets Prometheus distinguish transient failures (e.g. API throttling during NetworkPolicyReady) from load-bearing failures (DeploymentReady) and drives differentiated alerting",
+      "scenarios": [
+        {
+          "name": "Error increments counter",
+          "when": "reconcileDeployment returns a non-nil error",
+          "then": "keystone_operator_reconcile_errors_total{sub_reconciler=\"Deployment\",condition_type=\"DeploymentReady\"} increments by 1",
+          "and_then": [
+            "no other sub_reconciler label increments"
+          ]
+        },
+        {
+          "name": "Success does not increment",
+          "when": "reconcileDeployment returns (ctrl.Result{}, nil)",
+          "then": "the error counter for that label pair is unchanged",
+          "and_then": []
+        },
+        {
+          "name": "Non-zero Result without err is not an error",
+          "when": "a sub-reconciler returns ctrl.Result{RequeueAfter: 5*time.Second} with err == nil",
+          "then": "the error counter is NOT incremented",
+          "and_then": [
+            "requeue-without-error is the normal steady-state backoff signal and must not pollute the error rate"
+          ]
+        },
+        {
+          "name": "Parallel group error attributed to the correct sub-reconciler",
+          "when": "reconcileParallelGroup returns an error from the CredentialKeys member",
+          "then": "the error counter for sub_reconciler=\"CredentialKeys\" increments by 1 while FernetKeys and NetworkPolicy counters are unchanged",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The operator SHALL emit a keystone_operator_key_rotation_age_seconds gauge for each (keystone, namespace, key_type) triple when the rotation-completed-at annotation is present and parseable",
+      "priority": "SHALL",
+      "rationale": "Silent CronJob failures are the primary risk for fernet/credential rotation; exposing the age allows absent() and age > threshold alerting",
+      "scenarios": [
+        {
+          "name": "Staging Secret with annotation updates gauge",
+          "when": "the fernet staging Secret carries annotation forge.c5c3.io/rotation-completed-at=\"2026-04-22T12:00:00Z\" and the reconciler runs at 2026-04-22T12:05:00Z",
+          "then": "keystone_operator_key_rotation_age_seconds{keystone=\"<name>\",namespace=\"<ns>\",key_type=\"fernet\"} is approximately 300",
+          "and_then": []
+        },
+        {
+          "name": "Staging Secret absent does not emit gauge",
+          "when": "no staging Secret exists for a Keystone CR (first-rotation steady state)",
+          "then": "the gauge for that (keystone, namespace, key_type) triple is NOT set",
+          "and_then": [
+            "PromQL absent(keystone_operator_key_rotation_age_seconds{...}) is the alerting signal"
+          ]
+        },
+        {
+          "name": "Unparseable annotation does not emit gauge",
+          "when": "the staging Secret's annotation is \"not-a-timestamp\"",
+          "then": "the gauge is NOT set and a Warning event RotationAnnotationInvalid has already been emitted elsewhere",
+          "and_then": []
+        },
+        {
+          "name": "Credential key gauge tracks independently",
+          "when": "fernet rotated 10 minutes ago but credential never rotated",
+          "then": "key_type=\"fernet\" gauge emits age ≈ 600; key_type=\"credential\" gauge is NOT set",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The operator SHALL remove per-CR metric time series when a Keystone CR is deleted",
+      "priority": "SHALL",
+      "rationale": "Without deletion cleanup, metric cardinality grows monotonically for every historical CR ever reconciled, eventually OOM-ing the operator pod",
+      "scenarios": [
+        {
+          "name": "Delete event removes rotation age gauge",
+          "when": "reconcileDelete runs to completion for keystone=\"foo\" in namespace \"bar\"",
+          "then": "keystone_operator_key_rotation_age_seconds series with keystone=\"foo\",namespace=\"bar\" are deleted from the registry",
+          "and_then": [
+            "this MUST happen after the finalizer is released, not inside the timed reconcile path"
+          ]
+        },
+        {
+          "name": "Histogram and counter series are NOT deleted",
+          "when": "a Keystone CR is deleted",
+          "then": "keystone_operator_reconcile_duration_seconds and keystone_operator_reconcile_errors_total series are retained (labels do not include keystone name)",
+          "and_then": [
+            "these metrics are labelled only by sub_reconciler — they have bounded cardinality independent of CR count"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The operator SHALL emit db_sync Job metrics: a duration histogram and a terminal-state counter",
+      "priority": "SHALL",
+      "rationale": "db_sync is the highest-risk step in the reconcile flow during upgrades; Job-level observability is distinct from sub-reconciler-level timing because the Job lifecycle spans multiple reconciles",
+      "scenarios": [
+        {
+          "name": "Successful Job increments succeeded counter",
+          "when": "the db_sync Job transitions to Complete=True",
+          "then": "keystone_operator_db_sync_total{keystone=\"<name>\",namespace=\"<ns>\",result=\"succeeded\"} increments by 1",
+          "and_then": [
+            "keystone_operator_db_sync_duration_seconds records one observation from Job.CreationTimestamp to Job.Status.CompletionTime"
+          ]
+        },
+        {
+          "name": "Failed Job increments failed counter",
+          "when": "the db_sync Job transitions to Failed=True",
+          "then": "keystone_operator_db_sync_total{keystone=\"<name>\",namespace=\"<ns>\",result=\"failed\"} increments by 1",
+          "and_then": [
+            "duration histogram records observation using Job.CreationTimestamp to time of last condition transition"
+          ]
+        },
+        {
+          "name": "In-progress Job does not increment counter",
+          "when": "reconcileDatabase observes a Job with Complete=False,Failed=False (still running) across ten reconcile passes",
+          "then": "neither counter nor histogram is updated on any of the ten passes",
+          "and_then": [
+            "emission must be guarded by a condition transition, not by every reconcile observing the Job"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "The keystone-operator Helm chart SHALL ship an opt-in ServiceMonitor template gated by monitoring.serviceMonitor.enabled",
+      "priority": "SHALL",
+      "rationale": "The operator runs on clusters that may or may not have prometheus-operator-crds installed; unconditional ServiceMonitor emission would break installation on CRD-less clusters",
+      "scenarios": [
+        {
+          "name": "Opt-in renders ServiceMonitor",
+          "when": "helm template is invoked with --set monitoring.serviceMonitor.enabled=true",
+          "then": "exactly one object of kind ServiceMonitor, apiVersion monitoring.coreos.com/v1 is produced",
+          "and_then": [
+            "its spec.selector.matchLabels equals selectorLabels of the operator Service",
+            "its spec.endpoints[0].port equals \"metrics\"",
+            "its spec.endpoints[0].path equals \"/metrics\"",
+            "its spec.endpoints[0].interval defaults to 30s"
+          ]
+        },
+        {
+          "name": "Default renders no ServiceMonitor",
+          "when": "helm template is invoked with default values",
+          "then": "zero objects of kind ServiceMonitor are produced",
+          "and_then": [
+            "this guarantees installation succeeds on clusters without prometheus-operator-crds"
+          ]
+        },
+        {
+          "name": "Schema validation rejects wrong types",
+          "when": "helm template --set monitoring.serviceMonitor.enabled=\"yes\" is invoked",
+          "then": "helm fails with a values.schema.json validation error",
+          "and_then": [
+            "enabled must be a boolean, interval must match a duration pattern"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "The operator SHALL provide a single instrumentation helper instrumentSubReconciler(ctx, name, fn) used by every sub-reconciler invocation in Reconcile",
+      "priority": "SHALL",
+      "rationale": "Centralising instrumentation prevents future drift (a new sub-reconciler forgetting to emit metrics) and keeps metric semantics uniform",
+      "scenarios": [
+        {
+          "name": "Helper records duration and returns inner result verbatim",
+          "when": "instrumentSubReconciler(ctx, \"Deployment\", fn) is called where fn returns (ctrl.Result{RequeueAfter: 10*time.Second}, nil)",
+          "then": "the return value equals (ctrl.Result{RequeueAfter: 10*time.Second}, nil) byte-for-byte",
+          "and_then": [
+            "duration histogram has exactly one observation for sub_reconciler=\"Deployment\""
+          ]
+        },
+        {
+          "name": "Helper increments error counter on err != nil",
+          "when": "the inner fn returns (ctrl.Result{}, err)",
+          "then": "error counter increments with condition_type inferred from a registered lookup table",
+          "and_then": [
+            "the lookup table is built from subConditionTypes plus the three const-declared condition types"
+          ]
+        },
+        {
+          "name": "Helper is panic-safe",
+          "when": "the inner fn panics",
+          "then": "the histogram observation is still recorded via defer and the panic propagates unchanged",
+          "and_then": [
+            "panic-safety is required because controller-runtime's recovery middleware would otherwise see missing metrics"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "Custom metrics SHALL be registered on controller-runtime's global metrics.Registry so they are served at the existing :8080/metrics endpoint",
+      "priority": "SHALL",
+      "rationale": "The manager already exposes /metrics; registering on the same registry avoids a second HTTP server and keeps the scrape contract stable with the already-configured Service port",
+      "scenarios": [
+        {
+          "name": "Metrics served at :8080/metrics",
+          "when": "the operator is running and an HTTP GET is made to http://<pod-ip>:8080/metrics",
+          "then": "the response body contains keystone_operator_reconcile_duration_seconds HELP and TYPE comments",
+          "and_then": [
+            "no secondary listener is opened on any other port"
+          ]
+        },
+        {
+          "name": "Registration uses controller-runtime package",
+          "when": "init() of the metrics package runs",
+          "then": "it calls metrics.Registry.MustRegister from sigs.k8s.io/controller-runtime/pkg/metrics",
+          "and_then": [
+            "init() must be idempotent under test — use sync.Once or guard registration"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The project SHALL ship reference documentation listing every exported metric with name, type, labels, buckets, and semantic meaning",
+      "priority": "SHALL",
+      "rationale": "Dashboard authors and alert authors need a stable contract; undocumented metric names become de-facto API surface and are harder to evolve",
+      "scenarios": [
+        {
+          "name": "Reference doc exists at documented location",
+          "when": "a reviewer checks docs/reference/keystone-operator-metrics.md",
+          "then": "the file exists, is linked from docs/guides/observability.md, and follows the existing reference-doc layout",
+          "and_then": []
+        },
+        {
+          "name": "Doc matches emitted contract",
+          "when": "a unit test parses the metric names from the doc and compares them to registered collectors",
+          "then": "the two sets match exactly",
+          "and_then": [
+            "this is a regression guard against silent renames"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "The project SHALL ship a starter Grafana dashboard JSON using only metrics defined in this feature",
+      "priority": "SHALL",
+      "rationale": "A usable dashboard day-one dramatically lowers the cost of adoption and prevents metric names from silently decoupling from downstream consumers",
+      "scenarios": [
+        {
+          "name": "Dashboard file parses as JSON",
+          "when": "a unit test unmarshals operators/keystone/dashboards/keystone-operator.json into map[string]any",
+          "then": "parsing succeeds with no error",
+          "and_then": []
+        },
+        {
+          "name": "Dashboard references only defined metrics",
+          "when": "a unit test extracts every expr field from the dashboard JSON and compares metric names against registered collectors",
+          "then": "every referenced metric is either registered by this feature or is a controller-runtime built-in",
+          "and_then": [
+            "no dangling or speculative metric names"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "description": "The project SHOULD ship a how-to guide for enabling operator metrics scraping end-to-end",
+      "priority": "SHOULD",
+      "rationale": "Helm opt-in + dashboard import is the user-facing task flow; a how-to turns three reference docs into a 5-minute setup",
+      "scenarios": [
+        {
+          "name": "How-to exists and passes structure",
+          "when": "a reviewer opens docs/how-to/enable-keystone-operator-metrics.md",
+          "then": "it follows Prerequisites → Steps → Verification → See Also",
+          "and_then": [
+            "Verification section includes curl http://<service>:8080/metrics and expected line prefix"
+          ]
+        },
+        {
+          "name": "How-to stays in sync with values",
+          "when": "a linter greps the how-to for \"monitoring.serviceMonitor.enabled\"",
+          "then": "the key matches the real values.yaml path",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "description": "Metric label cardinality SHALL NOT grow with the number of Keystone CRs for sub-reconciler-level metrics",
+      "priority": "SHALL",
+      "rationale": "Per-CR labels on high-frequency metrics (reconcile_duration, reconcile_errors) cause unbounded cardinality; Keystone name belongs only on low-frequency gauges (rotation age) and Job-transition counters (db_sync)",
+      "scenarios": [
+        {
+          "name": "Reconcile metrics omit CR name",
+          "when": "inspecting the label sets on keystone_operator_reconcile_duration_seconds and keystone_operator_reconcile_errors_total",
+          "then": "neither includes a keystone or namespace label",
+          "and_then": [
+            "sub_reconciler and condition_type have bounded codomain drawn from subConditionTypes"
+          ]
+        },
+        {
+          "name": "Low-frequency gauges are allowed per-CR labels",
+          "when": "inspecting keystone_operator_key_rotation_age_seconds and keystone_operator_db_sync_total",
+          "then": "these are labelled by keystone and namespace",
+          "and_then": [
+            "scrape interval and update rate are low enough that the cardinality is acceptable for realistic cluster sizes (<1000 Keystone CRs)"
+          ]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Create operators/keystone/internal/metrics package with reconcile duration histogram, error counter, rotation age gauge, and db_sync counter/histogram; register on controller-runtime metrics.Registry via sync.Once; include a DeleteForKeystone(name, namespace) helper that calls gauge.DeleteLabelValues for per-CR series (CC-0089, REQ-001, REQ-002, REQ-003, REQ-005, REQ-008, REQ-012)",
+      "level": 1,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-005",
+        "REQ-008",
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Write unit tests in operators/keystone/internal/metrics/collectors_test.go covering: histogram registration, counter increments only on err, gauge set+delete, unparseable-timestamp rejection, DeleteForKeystone, and label cardinality assertions (CC-0089, REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-012)",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Add operators/keystone/internal/metrics/cardinality_test.go asserting reconcile_duration and reconcile_errors descriptors contain no keystone/namespace labels — drift guard against accidental high-cardinality additions (CC-0089, REQ-012)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Add instrumentSubReconciler(ctx, name, fn) helper to operators/keystone/internal/controller/instrumentation.go; use defer + time.Since to record duration; map name → condition_type via a package-private table built from subConditionTypes; call metrics.RecordReconcileError on non-nil err (CC-0089, REQ-001, REQ-002, REQ-007)",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Add operators/keystone/internal/controller/instrumentation_test.go with unit tests: records duration on success, records duration AND increments error counter on err, panic-safe (defer observes before re-panic), and lookup table covers every entry in subConditionTypes (CC-0089, REQ-007)",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Refactor Reconcile in operators/keystone/internal/controller/keystone_controller.go to wrap every sub-reconciler call (reconcileSecrets, reconcileDBConnectionSecret, reconcileConfig adapter, parallel group members, reconcileDatabase, reconcilePolicyValidation, reconcileDeployment, reconcileHTTPRoute, reconcileHealthCheck, reconcileHPA, reconcileBootstrap, reconcileTrustFlush) with instrumentSubReconciler — no behavioural change (CC-0089, REQ-001, REQ-002, REQ-007)",
+      "level": 2,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.4",
+      "title": "Extend reconcileParallelGroup to attribute errgroup errors back to the offending sub-reconciler name so RecordReconcileError is called with the correct sub_reconciler label — capture per-member error in the outcome struct and emit inside reconcileParallelGroup (CC-0089, REQ-002)",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "2.5",
+      "title": "Add a test in operators/keystone/internal/controller/keystone_controller_test.go (TestReconcileEmitsDurationForEverySubReconciler) asserting a single Reconcile pass emits duration samples for every sub_reconciler name (CC-0089, REQ-001)",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "2.6",
+      "title": "Add a test (TestReconcileParallelGroupErrorCountsAreAttributed) injecting a CredentialKeys failure and asserting the error counter increments only for sub_reconciler=CredentialKeys (CC-0089, REQ-002)",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "In reconcile_fernet.go, after a successful ensureStagingSecret Get, read the rotation-completed-at annotation on the staging Secret; if present and parseable, call metrics.SetKeyRotationAge(keystone, namespace, \"fernet\", parsedTime); if absent/malformed, do NOT set the gauge (CC-0089, REQ-003)",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Mirror 3.1 in reconcile_credential.go for key_type=credential (CC-0089, REQ-003)",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "3.3",
+      "title": "Extend reconcile_fernet_test.go with TestFernetReconcileUpdatesRotationAgeGauge and an absent-annotation negative case; do the same in reconcile_credential_test.go (CC-0089, REQ-003)",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "3.4",
+      "title": "In reconcile_database.go, on detecting a db_sync Job terminal transition (Complete=True or Failed=True), emit metrics.RecordDBSync(keystone, namespace, result, duration) where duration = condition.LastTransitionTime - Job.CreationTimestamp; guard with a transition-detection predicate so the same Job UID emits exactly once — use status annotation/field to remember last-observed Job UID (CC-0089, REQ-005)",
+      "level": 3,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "3.5",
+      "title": "Extend reconcile_database_test.go with TestDbSyncCompletionRecordsMetric and TestDbSyncFailureRecordsMetric plus a TestDbSyncInProgressDoesNotRecord case (CC-0089, REQ-005)",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "3.6",
+      "title": "In reconcileDelete (keystone_controller.go), after RemoveFinalizer and successful Update, call metrics.DeleteForKeystone(keystone.Name, keystone.Namespace) so per-CR gauge series do not leak (CC-0089, REQ-004)",
+      "level": 3,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "3.7",
+      "title": "Add TestReconcileDeleteRemovesRotationAgeSeries to keystone_controller_test.go — seed the gauge, run reconcileDelete, assert series absence (CC-0089, REQ-004)",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Add operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml rendering only when .Values.monitoring.serviceMonitor.enabled; apiVersion monitoring.coreos.com/v1; selector uses keystone-operator.selectorLabels; endpoints[0] port=metrics, path=/metrics, interval from .Values.monitoring.serviceMonitor.interval default 30s (CC-0089, REQ-006)",
+      "level": 4,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Extend operators/keystone/helm/keystone-operator/values.yaml with a monitoring block: monitoring.serviceMonitor.enabled=false (default) and monitoring.serviceMonitor.interval=30s (CC-0089, REQ-006)",
+      "level": 4,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "4.3",
+      "title": "Extend operators/keystone/helm/keystone-operator/values.schema.json with the monitoring block (enabled: boolean, interval: string with duration pattern) to fail-fast on bad inputs (CC-0089, REQ-006)",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "4.4",
+      "title": "Add operators/keystone/helm/keystone-operator/tests/servicemonitor_test.go with TestServiceMonitorRenderedWhenEnabled, TestServiceMonitorOmittedByDefault, TestValuesSchemaRejectsBadMonitoringInput using helm template + sigs.k8s.io/yaml parsing (CC-0089, REQ-006)",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "5.1",
+      "title": "Add operators/keystone/dashboards/keystone-operator.json with panels: reconcile duration p95 per sub_reconciler (histogram_quantile on rate of _bucket), reconcile error rate per condition_type (rate of _total), rotation age in seconds per keystone+key_type, db_sync duration p95 and failure count (CC-0089, REQ-010)",
+      "level": 5,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "5.2",
+      "title": "Add operators/keystone/dashboards/dashboard_test.go with TestDashboardParsesAsJSON and TestDashboardReferencesOnlyRegisteredMetrics (extract metric names from panel.targets[].expr via regex, intersect with the registered set from the metrics package) (CC-0089, REQ-010)",
+      "level": 5,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "6.1",
+      "title": "Write docs/reference/keystone-operator-metrics.md — one table per metric with name, type, labels, buckets (for histograms), and semantic meaning; include ServiceMonitor values.yaml snippet; link from docs/guides/observability.md (CC-0089, REQ-009)",
+      "level": 6,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "6.2",
+      "title": "Add operators/keystone/internal/metrics/contract_test.go (TestReferenceDocMatchesRegisteredMetrics) that parses the reference doc and asserts every H2/backticked metric name matches a registered collector — regression guard (CC-0089, REQ-009)",
+      "level": 6,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "6.3",
+      "title": "Write docs/how-to/enable-keystone-operator-metrics.md — Prerequisites (prometheus-operator-crds installed), Steps (helm upgrade with monitoring.serviceMonitor.enabled=true; import dashboards/keystone-operator.json in Grafana), Verification (curl :8080/metrics, sample PromQL), See Also (reference doc) (CC-0089, REQ-011)",
+      "level": 6,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "6.4",
+      "title": "Append a 'Metrics Instrumentation' section to docs/reference/keystone-reconciler.md describing instrumentSubReconciler, the name→condition_type lookup, and the rule that every new sub-reconciler must be wrapped — pointer to 6.1 for metric details (CC-0089, REQ-007, REQ-009)",
+      "level": 6,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-007",
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "7.1",
+      "title": "Add integration test TestMetricsEndpointServesKeystoneOperatorCollectors to operators/keystone/internal/controller/integration_test.go — envtest manager, create a Keystone CR, scrape http://<mgr.GetMetricsServer()>/metrics, assert keystone_operator_reconcile_duration_seconds TYPE line is present (CC-0089, REQ-008)",
+      "level": 7,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "7.2",
+      "title": "Add integration test TestReconcileErrorsTotalIncrementsOnInducedFailure — envtest, create a Keystone CR whose database Secret is missing, run one reconcile cycle, assert keystone_operator_reconcile_errors_total{sub_reconciler=\"Secrets\"} >= 1 via the registry gather (CC-0089, REQ-002, REQ-008)",
+      "level": 7,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-002",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "7.3",
+      "title": "Add e2e test tests/e2e/keystone/metrics_test.go — chainsaw-driven: install chart with monitoring.serviceMonitor.enabled=true, assert ServiceMonitor exists, poll Prometheus API until keystone_operator_reconcile_duration_seconds target is Up (CC-0089, REQ-006)",
+      "level": 7,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-006"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestReconcileDurationHistogramRegistered",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[unit] After init(), metrics.Registry contains a collector named keystone_operator_reconcile_duration_seconds with documented buckets",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestReconcileErrorsCounterLabels",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[unit] keystone_operator_reconcile_errors_total has exactly labels {sub_reconciler, condition_type} and increments correctly for a known pair",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestErrorCounterNotIncrementedOnSuccess",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[unit] Calling the increment helper with err=nil leaves counter value at 0",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestKeyRotationAgeGaugePresentAndAbsent",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] Setting the gauge yields a sample; deleting the label set removes the series",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestKeyRotationGaugeOmitsUnparseableTimestamp",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] The emit helper, given a malformed RFC3339 string, returns an error and does NOT set the gauge",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestDeleteKeystoneSeriesRemovesGauge",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] After calling metrics.DeleteForKeystone(name, namespace), the gauge series for both key_types is gone",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestDbSyncCounterIncrementsOnTerminalStateOnly",
+      "story": "SRE tracks database sync job health for upgrade risk management",
+      "expected": "[unit] Calling RecordDBSync(result=\"succeeded\") increments once; re-invocation for same Job UID is a no-op",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/collectors_test.go",
+      "test_function": "TestDbSyncDurationHistogramObservedOnce",
+      "story": "SRE tracks database sync job health for upgrade risk management",
+      "expected": "[unit] RecordDBSync captures a histogram observation on terminal state and not on in-progress reads",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconcilerRecordsDuration",
+      "story": "Keystone operator developer instruments a new sub-reconciler",
+      "expected": "[unit] The helper records one duration observation per call, regardless of success/error",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconcilerCountsErrors",
+      "story": "Keystone operator developer instruments a new sub-reconciler",
+      "expected": "[unit] When the wrapped fn returns err, the error counter for the mapped condition_type increments by 1",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/instrumentation_test.go",
+      "test_function": "TestInstrumentSubReconcilerPanicSafe",
+      "story": "Keystone operator developer instruments a new sub-reconciler",
+      "expected": "[unit] A panic from fn still records a duration observation via defer and re-panics",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/instrumentation_test.go",
+      "test_function": "TestConditionTypeLookupCoversAllSubConditions",
+      "story": "Keystone operator developer instruments a new sub-reconciler",
+      "expected": "[unit] The sub-reconciler-name-to-condition-type lookup table contains an entry for every item in subConditionTypes (drift guard)",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcileEmitsDurationForEverySubReconciler",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[unit] A successful end-to-end fake-client Reconcile emits at least one duration observation for every sub_reconciler label in subConditionTypes",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_fernet_test.go",
+      "test_function": "TestFernetReconcileUpdatesRotationAgeGauge",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] When the fernet staging Secret has a valid rotation-completed-at annotation, the reconcile path updates the gauge for key_type=fernet",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_credential_test.go",
+      "test_function": "TestCredentialReconcileUpdatesRotationAgeGauge",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] Same as fernet but for key_type=credential",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestDbSyncCompletionRecordsMetric",
+      "story": "SRE tracks database sync job health for upgrade risk management",
+      "expected": "[unit] Simulating a Job transition from Running → Complete triggers exactly one RecordDBSync(result=succeeded) call",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_database_test.go",
+      "test_function": "TestDbSyncFailureRecordsMetric",
+      "story": "SRE tracks database sync job health for upgrade risk management",
+      "expected": "[unit] Simulating a Job transition to Failed=True triggers exactly one RecordDBSync(result=failed) call",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/keystone_controller_test.go",
+      "test_function": "TestReconcileDeleteRemovesRotationAgeSeries",
+      "story": "Security operator monitors fernet/credential key rotation freshness",
+      "expected": "[unit] After reconcileDelete completes, keystone_operator_key_rotation_age_seconds has no series for the deleted (name, namespace)",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestMetricsEndpointServesKeystoneOperatorCollectors",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[integration] envtest manager with the controller registered serves keystone_operator_reconcile_duration_seconds at /metrics after creating and reconciling a Keystone CR",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "TestReconcileErrorsTotalIncrementsOnInducedFailure",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[integration] Inducing a known failure (missing Secret) in envtest and then scraping /metrics shows keystone_operator_reconcile_errors_total{sub_reconciler=\"Secrets\"} >= 1",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/e2e/keystone/metrics_test.go",
+      "test_function": "TestServiceMonitorDiscoversOperatorMetrics",
+      "story": "Cluster operator opts into ServiceMonitor scraping via Helm",
+      "expected": "[e2e] Installing the Helm chart with monitoring.serviceMonitor.enabled=true and prometheus-operator-crds produces a ServiceMonitor and Prometheus successfully scrapes keystone_operator_* metrics within 60s",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/servicemonitor_test.go",
+      "test_function": "TestServiceMonitorRenderedWhenEnabled",
+      "story": "Cluster operator opts into ServiceMonitor scraping via Helm",
+      "expected": "[unit] helm template with monitoring.serviceMonitor.enabled=true produces exactly one ServiceMonitor with expected selector and endpoints",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/servicemonitor_test.go",
+      "test_function": "TestServiceMonitorOmittedByDefault",
+      "story": "Cluster operator opts into ServiceMonitor scraping via Helm",
+      "expected": "[unit] helm template with default values produces zero ServiceMonitor objects",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/servicemonitor_test.go",
+      "test_function": "TestValuesSchemaRejectsBadMonitoringInput",
+      "story": "Cluster operator opts into ServiceMonitor scraping via Helm",
+      "expected": "[unit] helm template --set monitoring.serviceMonitor.enabled=\"yes\" fails with a values.schema.json validation error",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/dashboards/dashboard_test.go",
+      "test_function": "TestDashboardParsesAsJSON",
+      "story": "Operator imports a starter Grafana dashboard",
+      "expected": "[unit] operators/keystone/dashboards/keystone-operator.json parses as a map[string]any without error",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/dashboards/dashboard_test.go",
+      "test_function": "TestDashboardReferencesOnlyRegisteredMetrics",
+      "story": "Operator imports a starter Grafana dashboard",
+      "expected": "[unit] Every metric name extracted from dashboard panel expr fields is present in the set registered by the metrics package",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/contract_test.go",
+      "test_function": "TestReferenceDocMatchesRegisteredMetrics",
+      "story": "Operator reads a reference doc for the exported metrics",
+      "expected": "[unit] Parsing docs/reference/keystone-operator-metrics.md and comparing metric names to the registered collectors yields equal sets",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "operators/keystone/internal/metrics/cardinality_test.go",
+      "test_function": "TestSubReconcilerMetricsHaveNoCRLabels",
+      "story": "Cluster operator observes reconciliation health via Prometheus",
+      "expected": "[unit] The registered descriptors for reconcile_duration and reconcile_errors contain no label named \"keystone\" or \"namespace\"",
+      "requirement_id": "REQ-012"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "BLOCKER: keystone_operator_reconcile_duration_seconds observed for every sub-reconciler listed in subConditionTypes on a single end-to-end Reconcile (REQ-001)",
+    "BLOCKER: keystone_operator_reconcile_errors_total increments exactly once per errored sub-reconciler call, correctly attributed in the parallel group (REQ-002)",
+    "BLOCKER: No keystone/namespace label on reconcile_duration or reconcile_errors — cardinality drift guard passes (REQ-012)",
+    "BLOCKER: ServiceMonitor template is opt-in and defaults to disabled — helm template with default values renders zero ServiceMonitor objects (REQ-006)",
+    "BLOCKER: metrics.DeleteForKeystone is called in reconcileDelete after finalizer removal (REQ-004)",
+    "BLOCKER: db_sync metric emits exactly once per Job terminal-state transition, not per reconcile pass (REQ-005)",
+    "CRITICAL: Every sub-reconciler call site uses instrumentSubReconciler — no direct calls bypass instrumentation (REQ-007)",
+    "CRITICAL: rotation age gauge is NOT set when annotation is absent or unparseable — PromQL absent() remains the alert signal (REQ-003)",
+    "CRITICAL: All new code passes go vet, golangci-lint, and go test ./... with no //nolint suppressions beyond the pre-existing ones",
+    "CRITICAL: TestConditionTypeLookupCoversAllSubConditions passes — future sub-reconciler additions without lookup entries fail CI (REQ-007)",
+    "CRITICAL: Reference doc and dashboard JSON contain exactly the set of metric names registered by the collectors package — drift guards (tasks 5.2, 6.2) pass (REQ-009, REQ-010)",
+    "CRITICAL: Integration test asserts /metrics endpoint exposes keystone_operator_* metrics via envtest manager (REQ-008)",
+    "MINOR: docs/reference/keystone-operator-metrics.md is linked from docs/guides/observability.md (REQ-009)",
+    "MINOR: how-to guide verification section includes a sample curl + expected prefix for :8080/metrics (REQ-011)",
+    "MINOR: Grafana dashboard uses consistent panel titles matching the metric names (REQ-010)",
+    "MINOR: values.schema.json rejects non-boolean for monitoring.serviceMonitor.enabled at helm template time (REQ-006)"
+  ],
+  "implementation_notes": "ARCHITECTURE DECISIONS (CC-0089):\n\n1) Registration target: controller-runtime's metrics.Registry (sigs.k8s.io/controller-runtime/pkg/metrics). This is the same registry served at :8080/metrics by the manager configured in internal/common/bootstrap/manager.go:128. No new HTTP listener is required.\n\n2) Instrumentation layer: sub-reconciler calls are wrapped at the main Reconcile loop (keystone_controller.go:157-254) by a single helper instrumentSubReconciler(ctx, name, fn). This avoids editing every reconcile_*.go file and guarantees that a future sub-reconciler cannot forget instrumentation — the diff is one line at the call site.\n\n3) Metric taxonomy and cardinality discipline (REQ-012):\n   - HIGH-FREQUENCY, LOW-CARDINALITY: reconcile_duration_seconds (histogram, labels: sub_reconciler), reconcile_errors_total (counter, labels: sub_reconciler, condition_type). Bounded by subConditionTypes size (~12).\n   - LOW-FREQUENCY, PER-CR: key_rotation_age_seconds (gauge, labels: keystone, namespace, key_type), db_sync_total (counter, labels: keystone, namespace, result), db_sync_duration_seconds (histogram, labels: keystone, namespace).\n   - DELETE-ON-CR-DELETE: per-CR series are cleaned up in reconcileDelete via metrics.DeleteForKeystone to prevent unbounded growth over CR churn (REQ-004).\n\n4) Sub-reconciler name → condition_type mapping: built from subConditionTypes (keystone_controller.go:49-62) plus the three const-declared types. The mapping lives in instrumentation.go and is verified by TestConditionTypeLookupCoversAllSubConditions to prevent drift — if anyone adds a new sub-reconciler without extending the lookup, the test fails at CI.\n\n5) Rotation age derivation (REQ-003): the forge.c5c3.io/rotation-completed-at annotation on the staging Secret (constants in rotation_staging.go:30-33) is already parsed by applyRotationOutput. The gauge update is a side effect of a successful Get in reconcile_fernet.go / reconcile_credential.go — when the annotation is absent or unparseable, the gauge is deliberately NOT set so PromQL absent() becomes the alert signal (this is why gauge.Delete must be callable, not just a zero value).\n\n6) db_sync one-shot emission (REQ-005): the challenge is that reconcileDatabase runs repeatedly while the Job runs. Two approaches considered:\n   (a) compare observed Job condition against a memoised last-observed-UID+phase stored in Keystone status — chosen, because it survives operator restarts and is idempotent across requeues.\n   (b) rely on controller-runtime watch-event dedup — rejected, because Job watches fire on every status patch (pod transitions, backoff), not only on terminal transitions.\n   The predicate is simple: emit metric iff (Job.UID changed since last emission) OR (Job transitioned Complete/Failed since last emission).\n\n7) Helm chart opt-in (REQ-006): ServiceMonitor is a Prometheus Operator CRD. Emitting unconditionally would break installation on clusters without prometheus-operator-crds. The values.yaml default of monitoring.serviceMonitor.enabled=false preserves zero-impact upgrades for existing users. values.schema.json validation catches typos at helm lint time rather than at apply time.\n\n8) Panic safety: instrumentSubReconciler uses defer + time.Since to record duration regardless of how fn exits (normal return, err return, panic). A panic re-propagates — recovery is controller-runtime's responsibility.\n\n9) Testing strategy:\n   - Unit: operators/keystone/internal/metrics/collectors_test.go exercises the collectors directly against a fresh prometheus.NewRegistry to avoid cross-test pollution.\n   - Unit: operators/keystone/internal/controller/instrumentation_test.go exercises the helper against a mock registry.\n   - Unit: operators/keystone/helm/keystone-operator/tests/servicemonitor_test.go uses helm template + sigs.k8s.io/yaml to assert rendered output — same pattern as existing chart tests if present, otherwise new.\n   - Integration: operators/keystone/internal/controller/integration_test.go adds //go:build integration tests that hit the manager's metrics server via httptest-style client (mgr.GetMetricsServer() is available in controller-runtime v0.18+).\n   - E2E: tests/e2e/keystone/metrics_test.go via chainsaw asserts the ServiceMonitor → Prometheus scrape chain works end-to-end with prometheus-operator-crds installed in the kind cluster (already available per deploy/flux-system/releases/prometheus-operator-crds.yaml).\n\nARCHITECTURE DIAGRAM:\n\n  ┌──────────────────────────────────────────────┐\n  │ KeystoneReconciler.Reconcile (main loop)     │\n  │                                              │\n  │  for each sub-reconciler:                    │\n  │   ─► instrumentSubReconciler(ctx, name, fn)  │\n  │        │                                     │\n  │        ├── defer: observe duration histogram │\n  │        ├── run fn → (Result, err)            │\n  │        └── if err: increment errors counter  │\n  │                                              │\n  │  reconcileFernet ── sets rotation_age gauge  │\n  │  reconcileCredential ── sets rotation_age    │\n  │  reconcileDatabase ── emits db_sync metrics  │\n  │  reconcileDelete ── DeleteForKeystone(...)   │\n  └──────────────────────────────────────────────┘\n               │ register\n               ▼\n  ┌──────────────────────────────────────────────┐\n  │ controller-runtime metrics.Registry (global) │\n  │   — served at :8080/metrics by manager       │\n  └──────────────────────────────────────────────┘\n               │ scrape\n               ▼\n  ┌──────────────────────────────────────────────┐\n  │ ServiceMonitor (opt-in, monitoring.*)        │\n  │ ─► Prometheus Operator ─► Prometheus         │\n  │                              │               │\n  │                              ▼               │\n  │                        Grafana dashboard     │\n  └──────────────────────────────────────────────┘\n\nDATA FLOW — ROTATION AGE:\n  CronJob ──PATCH(data, annotation)──► staging Secret\n                                         │\n        reconcileFernet Get ◄────────────┘\n                │ parse annotation RFC3339\n                ▼\n        metrics.SetKeyRotationAge(name, ns, 'fernet', parsedTime)\n                ▼\n        gauge = time.Since(parsedTime).Seconds()\n\nKEY FILES:\n  - operators/keystone/internal/controller/keystone_controller.go  (wrap sub-reconciler calls)\n  - operators/keystone/internal/controller/rotation_staging.go:30-33  (annotation constants — reuse, do not redefine)\n  - operators/keystone/internal/controller/reconcile_database.go:53-79  (condition reason constants — align db_sync labels)\n  - internal/common/bootstrap/manager.go:128-130  (do NOT modify — already configured correctly)\n  - operators/keystone/helm/keystone-operator/templates/service.yaml:19-22  (port name 'metrics' — ServiceMonitor must reference this exact name)\n  - operators/keystone/helm/keystone-operator/values.schema.json  (extend with monitoring block)\n  - architecture/docs/06-operations/02-observability/01-metrics.md:52-68  (read-only reference — ServiceMonitor pattern already documented; implementation must match)\n\nPITFALLS:\n  - Re-registering collectors during test runs panics; use prometheus.NewRegistry per-test for isolation.\n  - parallelGroup errgroup.Wait returns the FIRST error only; to attribute errors to specific sub-reconcilers, capture per-member error in the outcome slice (task 2.4) BEFORE calling RecordReconcileError.\n  - Deleting a gauge series for a label combination that was never set is a no-op — safe to always call on reconcileDelete.\n  - helm template assertions must pin the Helm version; use the one already used by chart tests in the repo.\n  - ServiceMonitor's selector.matchLabels MUST match keystone-operator.selectorLabels exactly (the same template used by the Service) or Prometheus will match no endpoints.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T19:27:16.046051"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T19:27:16.303378"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-04-22T19:36:34.263155"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "f818f9b2-ee34-4bb4-ab87-7e7d74f7baea",
+      "timestamp": "2026-04-22T19:36:34.263194",
+      "total_duration": 555.1294598579407,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 555.1294598579407,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
