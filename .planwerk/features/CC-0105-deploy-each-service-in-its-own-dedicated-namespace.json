@@ -1,0 +1,1162 @@
+{
+  "feature_id": "CC-0105",
+  "title": "Deploy each service in its own dedicated Namespace",
+  "slug": "deploy-each-service-in-its-own-dedicated-namespace",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #328: Ensure that all services are deployed in their own dedicated Namespaces\n\n## Why\n\nThe platform's services are split across many Namespaces today, but the split is inconsistent:\n\n- The `keystone-operator` controller pod (manager + webhook + RBAC + ServiceMonitor) runs in `openstack` — the same Namespace as the Keystone workload it reconciles (Deployment, Secrets, HTTPRoute, NetworkPolicy, plus the `openstack-db` MariaDB CR, `openstack-memcached` Memcached CR and `openstack-gw` Gateway). That mixes a cluster-scoped controller with tenant payload in one Namespace and contradicts the \"controller in a dedicated Namespace\" pattern that `cert-manager`, `external-secrets`, `mariadb-operator`, `memcached-operator` and the OpenBao server already follow.\n- A `monitoring-system` Namespace is declared in `deploy/flux-system/namespaces.yaml:27` but nothing is actually deployed into it. The kube-prometheus-stack and the kind-only Namespace declaration use `monitoring` (`deploy/kind/prometheus/namespace.yaml:13`, `release.yaml:25`), and the Helm chart tests/NetworkPolicy selectors hard-code the `monitoring` label (`operators/keystone/internal/controller/reconcile_networkpolicy_test.go:178,540`, `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml:291,335,347,…`). Two HelmReleases still point at the unused `monitoring-system`: `prometheus-operator-crds` (`deploy/flux-system/releases/prometheus-operator-crds.yaml:14`) and the `installCRDs.namespace` patch in `memcached-operator` (`deploy/flux-system/releases/memcached-operator.yaml:16`).\n- Namespace naming is mixed: bare (`cert-manager`, `external-secrets`, `chaos-mesh`, `monitoring`) versus `-system`-suffixed (`mariadb-system`, `memcached-system`, `openbao-system`, `envoy-gateway-system`, `headlamp-system`, `monitoring-system`, `flux-system`). The convention should be fixed and documented so future services land in the right place by default.\n\n## Current state (verified 2026-05-06)\n\n| Service | HelmRelease defined in | Workload runs in | Notes |\n|---|---|---|---|\n| cert-manager | `flux-system` | `cert-manager` | OK — controller in own NS |\n| external-secrets | `external-secrets` | `external-secrets` | OK |\n| mariadb-operator (+ CRDs) | `mariadb-system` | `mariadb-system` | OK |\n| memcached-operator | `memcached-system` | `memcached-system` | `installCRDs.namespace: monitoring-system` (stale) |\n| openbao | `openbao-system` | `openbao-system` | OK |\n| prometheus-operator-crds | `monitoring-system` | (CRDs are cluster-scoped) | release record lands in unused NS |\n| kube-prometheus-stack (kind) | `monitoring` | `monitoring` | inconsistent with `monitoring-system` |\n| envoy-gateway (kind) | `flux-system` | `envoy-gateway-system` | OK |\n| chaos-mesh (kind, opt-in) | `flux-system` | `chaos-mesh` | naming-style outlier |\n| headlamp (kind) | `flux-system` | `headlamp-system` | OK |\n| flux-web (kind) | `flux-system` | `flux-system` | intentional — UI for Flux itself |\n| **keystone-operator** | `openstack` | `openstack` | **co-tenant with Keystone workload** |\n| Keystone CR + payload | `openstack` | `openstack` | OK as workload Namespace |\n\n## Proposed end state\n\n1. **Move the `keystone-operator` controller into its own Namespace** (proposed: `keystone-system`). The Keystone CR and the operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy) stay in `openstack`. This mirrors `cert-manager` (controller in `cert-manager`, `Certificate` CRs in user Namespaces).\n2. **Collapse `monitoring-system` and `monitoring` into one Namespace.** Pick `monitoring` (matches the existing kube-prometheus-stack deployment, the Helm chart tests and the NetworkPolicy selectors — cheapest migration). Re-point `prometheus-operator-crds` and the `memcached-operator` `installCRDs.namespace` patch to `monitoring`; drop `monitoring-system` from `deploy/flux-system/namespaces.yaml`.\n3. **Document the Namespace policy** in `architecture/docs/05-deployment/` so the convention is explicit:\n   - controllers live in a dedicated Namespace named after the service (`<service>-system` for SAP-style suffixed Namespaces, or the upstream-default name where the upstream chart fixes one — e.g. `cert-manager`, `external-secrets`);\n   - workloads/CRs live in their tenant Namespace (`openstack` for the OpenStack control plane);\n   - one Helm release ↔ one Namespace.\n4. **Optional follow-up (out of scope here)**: align `chaos-mesh` to `chaos-mesh-system` for consistency, and decide whether bare-named upstream defaults (`cert-manager`, `external-secrets`) get aliased to `-system` form. Tracked separately if pursued.\n\n## Scope (file by file)\n\n- `deploy/flux-system/namespaces.yaml`\n  - add `keystone-system`\n  - remove `monitoring-system` (replaced by `monitoring`)\n  - add `monitoring` (so the Namespace exists in the Flux base, not only in the kind overlay)\n- `deploy/flux-system/releases/keystone-operator.yaml`\n  - move HelmRelease `metadata.namespace` from `openstack` → `keystone-system`\n  - keep `dependsOn` references unchanged (they already point to other dedicated Namespaces)\n- `deploy/flux-system/releases/prometheus-operator-crds.yaml`\n  - move `metadata.namespace` from `monitoring-system` → `monitoring`\n- `deploy/flux-system/releases/memcached-operator.yaml`\n  - patch `installCRDs.namespace` from `monitoring-system` → `monitoring`\n- `deploy/kind/base/kustomization.yaml`\n  - update the keystone-operator suspend patch's `metadata.namespace` from `openstack` → `keystone-system` (so the kind CI override still targets the right release)\n  - update the comment block that explains the `meta.helm.sh/release-namespace=openstack` ownership-conflict workaround (lines 87-92) — once the operator lives in `keystone-system`, the workaround needs to be re-validated and either the comment updated or the patch dropped if no longer needed\n- `deploy/kind/prometheus/namespace.yaml` and `kustomization.yaml`\n  - leave the `monitoring` Namespace definition local to the kind overlay if Namespace ownership conflicts arise once it's also declared in `flux-system/namespaces.yaml`; otherwise consolidate\n- `keystone.yaml` (sample CR)\n  - no change — Keystone CR stays in `openstack`\n- `operators/keystone/helm/keystone-operator/values.yaml` and `tests/`\n  - no change to default values; verify rendered manifests still pass `helm unittest` after the controller's release Namespace changes\n- `architecture/docs/05-deployment/index.md` (or a new section)\n  - document the Namespace convention and the controller-vs-workload split\n- `README.md` / `docs/quick-start*.md`\n  - update any `kubectl -n openstack get pods | grep keystone-operator` examples to `-n keystone-system`\n- E2E tests (`tests/e2e/keystone/**/chainsaw-test.yaml`)\n  - audit selectors that look up the operator Pod by `-n openstack`; switch to `-n keystone-system` (the workload assertions on `-n openstack` stay)\n\n## Migration considerations\n\n- The HelmRelease move is **not** a Helm in-place upgrade — Helm cannot move a release between Namespaces. Path: `flux suspend hr keystone-operator -n openstack` → `helm uninstall -n openstack keystone-operator` (or `flux delete hr` with prune) → `flux resume` after the manifest now points at `keystone-system`. The Keystone CR webhooks must be tolerant of a brief controller absence; existing `Keystone` CRs are not deleted.\n- ClusterRole/ClusterRoleBinding ownership annotations (`meta.helm.sh/release-namespace=openstack`) need to be cleaned up before reinstall, otherwise the new install in `keystone-system` errors with the same annotation conflict the kind suspend-patch comment already documents.\n- `monitoring-system` removal is safe — no live workload references it. The `prometheus-operator-crds` HelmRelease's release record will move; the CRDs themselves are cluster-scoped so no in-cluster CRD churn.\n- ExternalSecrets, MariaDB CR, Memcached CR and Gateway in `openstack` are unchanged.\n\n## Definition of Done\n\n- [ ] `keystone-operator` HelmRelease lives in `keystone-system`; `kubectl get pods -n keystone-system` shows the controller; `kubectl get pods -n openstack` no longer lists it\n- [ ] `monitoring-system` Namespace is gone; all HelmReleases that referenced it now point to `monitoring`\n- [ ] `make kind-up` passes from a clean cluster; existing `tests/e2e/keystone/` Chainsaw suites stay green (parallel: 4, two consecutive runs without flakes)\n- [ ] `make helm-test` (helm-unittest) green; no test still asserts the operator's release Namespace as `openstack`\n- [ ] Architecture doc updated with the Namespace convention; `quick-start*.md` examples updated to `-n keystone-system`\n- [ ] No CRD or workload churn in the `openstack` Namespace beyond the controller Pod move\n\n## Risks / Open questions\n\n- **Operator-relocation ownership conflict**: the workaround documented at `deploy/kind/base/kustomization.yaml:87-92` exists because Helm release Namespace mismatches collide on ClusterRole annotations. Moving the controller may make the suspend-patch obsolete or require it to follow the new Namespace. To be confirmed during implementation.\n- **Webhook reachability**: the keystone-operator webhook `Service` moves with the HelmRelease into `keystone-system`. Validate that `cert-manager` `Certificate` for the webhook's serving cert renders correctly in the new Namespace and that `kube-apiserver → webhook` connectivity isn't affected by any (future) NetworkPolicy default-denies.\n- **`monitoring` vs `monitoring-system` aesthetics**: choosing `monitoring` matches what's already deployed and tested but breaks the `-system`-suffix convention used elsewhere. Reversing the choice (rename `monitoring` → `monitoring-system`) is more invasive and not justified by any current consumer.\n- **Naming convention scope**: this issue does not rename `cert-manager` / `external-secrets` / `chaos-mesh` to `-system`-suffixed forms. Those are upstream defaults; renaming is a follow-up that should weigh churn against consistency.\n\n---\nSource: https://github.com/C5C3/forge/issues/328\n\n\n---\nSource: https://github.com/C5C3/forge/issues/328",
+  "stories": [
+    {
+      "title": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "role": "platform operator",
+      "want": "the keystone-operator controller Pod to run in a dedicated keystone-system Namespace separate from the openstack workload Namespace",
+      "so_that": "the cluster-scoped controller is isolated from tenant payload (Keystone CR, Deployment, Secrets, MariaDB CR, Memcached CR, HTTPRoute), matching the pattern used by cert-manager / external-secrets / mariadb-operator / memcached-operator / openbao",
+      "criteria": [
+        "deploy/flux-system/releases/keystone-operator.yaml has metadata.namespace: keystone-system (CC-0105, REQ-001)",
+        "deploy/flux-system/namespaces.yaml declares a Namespace resource named keystone-system (CC-0105, REQ-002)",
+        "kubectl get pods -n keystone-system after `make kind-up` lists the operator controller pod (CC-0105, REQ-007)",
+        "kubectl get pods -n openstack no longer lists the keystone-operator controller pod (only the Keystone workload Deployment) (CC-0105, REQ-015)",
+        "The Keystone CR sample (keystone.yaml) and the operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy) continue to live in the openstack Namespace unchanged (CC-0105, REQ-015)"
+      ]
+    },
+    {
+      "title": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "role": "platform operator",
+      "want": "monitoring-system to be deleted and all monitoring-related HelmReleases consolidated into the existing live monitoring Namespace",
+      "so_that": "there is exactly one Namespace where monitoring artefacts (prometheus-operator-crds release record, kube-prometheus-stack workloads, ServiceMonitor CRD scope) live — eliminating the dead monitoring-system Namespace that no workload references",
+      "criteria": [
+        "monitoring-system Namespace declaration is removed from deploy/flux-system/namespaces.yaml (CC-0105, REQ-003)",
+        "monitoring Namespace is declared in deploy/flux-system/namespaces.yaml (production base, not only the kind overlay) (CC-0105, REQ-004)",
+        "deploy/flux-system/releases/prometheus-operator-crds.yaml has metadata.namespace: monitoring (CC-0105, REQ-005)",
+        "deploy/flux-system/releases/memcached-operator.yaml dependsOn references prometheus-operator-crds in the monitoring Namespace (CC-0105, REQ-006)",
+        "No production manifest, e2e test, or doc still references monitoring-system as a target Namespace for any HelmRelease (CC-0105, REQ-003, REQ-012)"
+      ]
+    },
+    {
+      "title": "Architect documents the Namespace policy so future services land consistently",
+      "role": "architect",
+      "want": "an explicit Namespace policy section under architecture/docs/05-deployment/",
+      "so_that": "new services follow the controller-in-its-own-Namespace rule without re-deriving it from existing precedents, and the controller-vs-workload split (one Helm release ↔ one Namespace) is documented",
+      "criteria": [
+        "A new doc page (e.g. architecture/docs/05-deployment/04-namespace-policy.md) states: (a) controllers live in a dedicated <service>-system Namespace, (b) workloads/CRs live in their tenant Namespace, (c) one Helm release ↔ one Namespace (CC-0105, REQ-013)",
+        "The doc enumerates the current per-service Namespace assignments (cert-manager, external-secrets, mariadb-system, memcached-system, openbao-system, keystone-system, monitoring, openstack) (CC-0105, REQ-013)",
+        "architecture/docs/05-deployment/index.md links to the new policy page (CC-0105, REQ-013)",
+        "The doc records why upstream-default Namespaces (cert-manager, external-secrets) are kept bare and why chaos-mesh remains a follow-up rename (CC-0105, REQ-013)"
+      ]
+    },
+    {
+      "title": "End-user follows quick-start docs and finds the operator in keystone-system",
+      "role": "end user",
+      "want": "all Quick Start / How-to examples that look up the keystone-operator pod to use -n keystone-system",
+      "so_that": "copy-paste commands from the docs work against the new layout without breaking",
+      "criteria": [
+        "docs/quick-start.md and docs/quick-start-extended.md examples that list the operator pod use -n keystone-system (CC-0105, REQ-012)",
+        "docs/guides/observability.md operator-log examples use -n keystone-system (workload-log examples remain -n openstack) (CC-0105, REQ-012)",
+        "docs/guides/enable-keystone-operator-networkpolicy.md operator-pod selector example uses -n keystone-system (CC-0105, REQ-012)",
+        "docs/reference/backend/keystone-operator-packaging.md `Target namespace` row reads keystone-system (CC-0105, REQ-012)",
+        "docs/reference/infrastructure/infrastructure-manifests.md namespace inventory tables list keystone-system and drop monitoring-system (CC-0105, REQ-012)"
+      ]
+    },
+    {
+      "title": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "role": "CI engineer",
+      "want": "every e2e test that looks up the operator pod by `-n openstack` to switch to `-n keystone-system`, while workload assertions stay on `-n openstack`",
+      "so_that": "the existing tests/e2e/keystone/ suites pass on a clean kind cluster after the migration without modifying the test intent",
+      "criteria": [
+        "tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml installs the secondary Helm release into keystone-system and asserts the NetworkPolicy/Pod there (CC-0105, REQ-010)",
+        "tests/e2e/keystone/metrics/chainsaw-test.yaml installs the secondary Helm release into keystone-system and asserts the ServiceMonitor in keystone-system (CC-0105, REQ-010)",
+        "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml podLogs lookup for the operator uses namespace: keystone-system (CC-0105, REQ-010)",
+        "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml operator log lookups (`kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator`) target the operator's namespace, not $NAMESPACE (workload ns) (CC-0105, REQ-010)",
+        "hack/ci-deploy-operator.sh runs `helm install … --namespace keystone-system --create-namespace` so the primary operator is installed into keystone-system in all four CI matrix jobs (CC-0105, REQ-011)"
+      ]
+    },
+    {
+      "title": "Release manager performs the controller relocation without losing Keystone CRs",
+      "role": "release manager",
+      "want": "a documented migration sequence (suspend → uninstall → cleanup of ClusterRole ownership annotations → reinstall in new Namespace)",
+      "so_that": "the move from openstack to keystone-system is reproducible and existing Keystone CRs are not deleted",
+      "criteria": [
+        "The new namespace-policy doc (or a sibling migration runbook) documents the steps: `flux suspend hr keystone-operator -n openstack` → `helm uninstall keystone-operator -n openstack` → cleanup ClusterRole/ClusterRoleBinding ownership annotations → `flux resume` once the HelmRelease manifest points at keystone-system (CC-0105, REQ-014)",
+        "The runbook notes that Helm cannot move a release between Namespaces in place (CC-0105, REQ-014)",
+        "The runbook notes that existing Keystone CRs are not deleted during the controller move and that the webhook is briefly unavailable while the new Pod starts (CC-0105, REQ-014)",
+        "The runbook explicitly calls out the meta.helm.sh/release-namespace annotation conflict on ClusterRole/ClusterRoleBinding that will otherwise block reinstall (CC-0105, REQ-014)"
+      ]
+    },
+    {
+      "title": "Reviewer can verify the production posture guard is updated for the new layout",
+      "role": "reviewer",
+      "want": "the existing tests/unit/deploy/production_posture_test.sh test (which compares deploy/flux-system/releases/* to origin/main) to either auto-resolve after merge or be acknowledged in this PR",
+      "so_that": "the diff to production overlays is intentional and the test does not silently regress",
+      "criteria": [
+        "If the test must be temporarily relaxed for this PR, the relaxation is documented inline with a CC-0105 marker (CC-0105, REQ-016)",
+        "The test passes after the PR is merged into main and origin/main reflects the new keystone-system / monitoring layout (CC-0105, REQ-016)",
+        "The PR description names the three production-overlay files being changed: namespaces.yaml, releases/keystone-operator.yaml, releases/prometheus-operator-crds.yaml, releases/memcached-operator.yaml (CC-0105, REQ-016)"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "The keystone-operator HelmRelease SHALL be defined with metadata.namespace: keystone-system in deploy/flux-system/releases/keystone-operator.yaml.",
+      "priority": "SHALL",
+      "rationale": "Isolates the cluster-scoped controller from the openstack tenant Namespace, matching cert-manager / mariadb-operator / memcached-operator / openbao precedents (CC-0105 Why bullet 1).",
+      "scenarios": [
+        {
+          "name": "Manifest declares the new Namespace",
+          "when": "deploy/flux-system/releases/keystone-operator.yaml is parsed",
+          "then": "metadata.namespace equals keystone-system",
+          "and_then": [
+            "dependsOn entries pointing at cert-manager / mariadb-system / memcached-system / external-secrets remain unchanged"
+          ]
+        },
+        {
+          "name": "Live cluster reconciles into the new Namespace",
+          "when": "FluxCD applies the new manifest to a kind cluster",
+          "then": "the keystone-operator Deployment, Service, ServiceAccount, and webhook Service exist in keystone-system",
+          "and_then": [
+            "the same resources do not exist in openstack"
+          ]
+        },
+        {
+          "name": "Annotation alignment",
+          "when": "any ClusterRole/ClusterRoleBinding rendered by the chart is inspected",
+          "then": "meta.helm.sh/release-namespace equals keystone-system",
+          "and_then": [
+            "no kind-overlay workaround comment still claims the annotation is openstack"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The keystone-system Namespace SHALL be declared in deploy/flux-system/namespaces.yaml so it exists before the HelmRelease is reconciled.",
+      "priority": "SHALL",
+      "rationale": "Production base must own its Namespace resources; relying on install.createNamespace=true alone creates ownership ambiguity (see I-001 finding in CC-0088 review).",
+      "scenarios": [
+        {
+          "name": "Namespace declared",
+          "when": "deploy/flux-system/namespaces.yaml is rendered",
+          "then": "a Namespace resource named keystone-system is emitted",
+          "and_then": []
+        },
+        {
+          "name": "Ordering preserved",
+          "when": "kustomize builds the flux-system overlay",
+          "then": "the Namespace appears before the HelmRelease in the rendered output",
+          "and_then": [
+            "FluxCD does not race the HelmRelease against Namespace creation"
+          ]
+        },
+        {
+          "name": "No duplicate ownership",
+          "when": "kustomize builds the flux-system overlay and the kind overlay together",
+          "then": "the keystone-system Namespace is emitted exactly once",
+          "and_then": [
+            "no kustomize merge conflict on metadata.name"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The monitoring-system Namespace SHALL be removed from deploy/flux-system/namespaces.yaml.",
+      "priority": "SHALL",
+      "rationale": "The Namespace is referenced by zero workloads after REQ-005/REQ-006; keeping it would mislead readers (CC-0105 Why bullet 2).",
+      "scenarios": [
+        {
+          "name": "Production base no longer declares monitoring-system",
+          "when": "deploy/flux-system/namespaces.yaml is rendered",
+          "then": "no Namespace with name monitoring-system appears",
+          "and_then": []
+        },
+        {
+          "name": "No HelmRelease targets monitoring-system",
+          "when": "grep monitoring-system runs over deploy/flux-system/releases",
+          "then": "no match is found",
+          "and_then": []
+        },
+        {
+          "name": "No doc still lists monitoring-system as a target",
+          "when": "grep monitoring-system runs over docs/ and architecture/docs/",
+          "then": "any remaining match is historical context only (e.g., migration notes) and not a current-state claim",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The monitoring Namespace SHALL be declared in deploy/flux-system/namespaces.yaml so the production base, not only the kind overlay, owns it.",
+      "priority": "SHALL",
+      "rationale": "Aligns with the one-Helm-release-per-Namespace convention; the kind overlay's inline monitoring Namespace becomes redundant once the base declares it.",
+      "scenarios": [
+        {
+          "name": "Production base declares monitoring",
+          "when": "deploy/flux-system/namespaces.yaml is rendered",
+          "then": "a Namespace resource named monitoring is emitted",
+          "and_then": []
+        },
+        {
+          "name": "Kind overlay does not double-declare",
+          "when": "kustomize build deploy/kind/base runs",
+          "then": "the monitoring Namespace appears exactly once in the rendered output",
+          "and_then": [
+            "the kind/prometheus overlay's inline namespace.yaml is either dropped or kept with an explicit comment that it duplicates the base for self-containment under LoadRestrictionsRootOnly"
+          ]
+        },
+        {
+          "name": "Existing kube-prometheus-stack release continues to bind to monitoring",
+          "when": "deploy/kind/prometheus/release.yaml is rendered",
+          "then": "metadata.namespace remains monitoring (unchanged)",
+          "and_then": [
+            "the kube-prometheus-stack workload still lands in monitoring"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The prometheus-operator-crds HelmRelease SHALL be defined with metadata.namespace: monitoring (not monitoring-system).",
+      "priority": "SHALL",
+      "rationale": "Consolidates the prometheus-operator-crds release record into the live monitoring Namespace; the CRDs themselves are cluster-scoped so no in-cluster CRD churn occurs.",
+      "scenarios": [
+        {
+          "name": "Manifest points at monitoring",
+          "when": "deploy/flux-system/releases/prometheus-operator-crds.yaml is parsed",
+          "then": "metadata.namespace equals monitoring",
+          "and_then": []
+        },
+        {
+          "name": "CRDs remain cluster-scoped",
+          "when": "kubectl get crd | grep monitoring.coreos.com runs after the move",
+          "then": "the same set of CRDs is present",
+          "and_then": [
+            "no CRD is recreated or deleted during the move"
+          ]
+        },
+        {
+          "name": "FluxCD release record is recreated in monitoring",
+          "when": "Flux reconciles the new manifest",
+          "then": "the helm release secret for prometheus-operator-crds exists in monitoring and not in monitoring-system",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "deploy/flux-system/releases/memcached-operator.yaml SHALL reference the monitoring Namespace (not monitoring-system) in its dependsOn entry for prometheus-operator-crds.",
+      "priority": "SHALL",
+      "rationale": "Stale dependsOn would point at a Namespace that no longer exists and Flux would never observe the dependency as Ready.",
+      "scenarios": [
+        {
+          "name": "dependsOn updated",
+          "when": "deploy/flux-system/releases/memcached-operator.yaml is parsed",
+          "then": "spec.dependsOn entry for prometheus-operator-crds has namespace: monitoring",
+          "and_then": []
+        },
+        {
+          "name": "No installCRDs.namespace patch references monitoring-system",
+          "when": "grep monitoring-system runs over deploy/flux-system/releases/memcached-operator.yaml",
+          "then": "no match is found",
+          "and_then": []
+        },
+        {
+          "name": "Memcached operator still reconciles",
+          "when": "FluxCD reconciles the chain",
+          "then": "memcached-operator HelmRelease reaches Ready=True",
+          "and_then": [
+            "dependsOn evaluation succeeds against the new Namespace"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "deploy/kind/base/kustomization.yaml SHALL patch the keystone-operator HelmRelease at metadata.namespace: keystone-system (not openstack), and the explanatory comment block (currently lines 87-92) SHALL be re-validated and either updated or removed.",
+      "priority": "SHALL",
+      "rationale": "Kustomize patches match by group+kind+name+namespace; an unchanged patch target would silently miss the moved HelmRelease and CI would install the published chart on top of the local dev image.",
+      "scenarios": [
+        {
+          "name": "Patch target matches new namespace",
+          "when": "kustomize build deploy/kind/base runs",
+          "then": "the keystone-operator HelmRelease in the rendered output has spec.suspend: true and metadata.namespace: keystone-system",
+          "and_then": []
+        },
+        {
+          "name": "Stale comment removed or updated",
+          "when": "deploy/kind/base/kustomization.yaml is read",
+          "then": "the lines explaining the meta.helm.sh/release-namespace=openstack ownership conflict either reference keystone-system or are removed if the workaround is obsolete after the move",
+          "and_then": [
+            "a DECISION comment captures the rationale if the patch is kept verbatim"
+          ]
+        },
+        {
+          "name": "CI matrix still suspends the production HelmRelease",
+          "when": "make kind-up runs in CI",
+          "then": "the keystone-operator HelmRelease is suspended in keystone-system so hack/ci-deploy-operator.sh's helm install does not race the Flux-driven install",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The kind prometheus overlay (deploy/kind/prometheus/) SHALL NOT collide with the new flux-system monitoring Namespace declaration.",
+      "priority": "SHALL",
+      "rationale": "Two overlays owning the same Namespace produce kustomize merge conflicts or fight on meta.kubectl.kubernetes.io/last-applied-configuration.",
+      "scenarios": [
+        {
+          "name": "Self-contained kind overlay still renders",
+          "when": "kubectl apply -k deploy/kind/prometheus runs standalone",
+          "then": "the monitoring Namespace is created exactly once",
+          "and_then": [
+            "LoadRestrictionsRootOnly still passes"
+          ]
+        },
+        {
+          "name": "Combined kind base + flux base renders cleanly",
+          "when": "kustomize build deploy/kind/base runs (which already references flux-system base)",
+          "then": "the rendered output contains the monitoring Namespace exactly once",
+          "and_then": []
+        },
+        {
+          "name": "Decision recorded",
+          "when": "deploy/kind/prometheus/namespace.yaml or kustomization.yaml is inspected",
+          "then": "a DECISION or explicit header comment names whether the inline namespace was dropped or kept-for-self-containment, with reasoning",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "Helm chart unit tests (`helm unittest operators/keystone/helm/keystone-operator/`) SHALL stay green after the release Namespace change.",
+      "priority": "SHALL",
+      "rationale": "Templates use {{ .Release.Namespace }} extensively; some tests may have hard-coded openstack as the expected release namespace.",
+      "scenarios": [
+        {
+          "name": "make helm-test passes",
+          "when": "helm-unittest runs against the chart",
+          "then": "all suites report success",
+          "and_then": []
+        },
+        {
+          "name": "No test asserts release.namespace==openstack as an invariant of correctness",
+          "when": "the test suite is audited",
+          "then": "any namespace value in a test fixture is either parameterized or documented as illustrative",
+          "and_then": []
+        },
+        {
+          "name": "Schema validation tests still pass",
+          "when": "tests/schema_validation_test.yaml runs",
+          "then": "all monitoring/networkpolicy fixtures still resolve",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "description": "E2E Chainsaw suites SHALL look up the keystone-operator Pod by `-n keystone-system` (not `-n openstack`); workload assertions remain on `-n openstack`.",
+      "priority": "SHALL",
+      "rationale": "Operator-pod selectors and podLogs targets become wrong after the move; missing this would cause silent log dump failures and false-green outcomes.",
+      "scenarios": [
+        {
+          "name": "gateway-quick-start operator podLogs target updated",
+          "when": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml is parsed",
+          "then": "the podLogs entry with selector app.kubernetes.io/name=keystone-operator has namespace: keystone-system",
+          "and_then": [
+            "the envoy-gateway-system podLogs entry is unchanged"
+          ]
+        },
+        {
+          "name": "metrics suite installs into keystone-system",
+          "when": "tests/e2e/keystone/metrics/chainsaw-test.yaml step 1 runs",
+          "then": "the helm install --namespace argument is keystone-system and the ServiceMonitor assertion in step 2 references namespace: keystone-system",
+          "and_then": []
+        },
+        {
+          "name": "network-policy-egress suite installs into keystone-system",
+          "when": "tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml step 1 runs",
+          "then": "the helm install --namespace argument is keystone-system and the NetworkPolicy assertion in step 2 references namespace: keystone-system",
+          "and_then": []
+        },
+        {
+          "name": "semantic-invariants log lookups separate operator from workload",
+          "when": "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml catch blocks run",
+          "then": "operator log lookups (`-l app.kubernetes.io/name=keystone-operator`) use namespace keystone-system; Keystone CR / workload lookups continue to use $NAMESPACE (openstack)",
+          "and_then": []
+        },
+        {
+          "name": "namespace-scoped-rbac suite intent preserved",
+          "when": "tests/e2e/keystone/namespace-scoped-rbac/chainsaw-test.yaml is reviewed",
+          "then": "the test continues to install the operator into a namespace where a Keystone CR also lives (this test specifically exercises namespace-scoped RBAC; openstack is acceptable, or both can be relocated together) — a DECISION comment captures the choice",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "description": "hack/ci-deploy-operator.sh SHALL install the keystone-operator into keystone-system in all four CI matrix jobs (e2e-operator, e2e-prometheus, …).",
+      "priority": "SHALL",
+      "rationale": "Today the script runs `helm install` with no --namespace flag, defaulting to `default`; after the move CI must align with the production target to exercise the canonical layout.",
+      "scenarios": [
+        {
+          "name": "helm install uses --namespace keystone-system",
+          "when": "hack/ci-deploy-operator.sh runs in CI",
+          "then": "the helm install command receives `--namespace keystone-system --create-namespace` (or equivalent)",
+          "and_then": [
+            "the operator pod appears in keystone-system in subsequent kubectl wait calls"
+          ]
+        },
+        {
+          "name": "webhook configuration check still resolves",
+          "when": "step 3 of the script (waiting for the mutating webhook) runs",
+          "then": "the cluster-scoped MutatingWebhookConfiguration is found by its existing name",
+          "and_then": []
+        },
+        {
+          "name": "ServiceMonitor opt-in still works",
+          "when": "WITH_PROMETHEUS=true is set",
+          "then": "the rendered ServiceMonitor lands in keystone-system and the prometheus-stack chainsaw suite can discover it via the cross-namespace selector configured in deploy/kind/prometheus/release.yaml",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "description": "User-facing documentation (docs/quick-start.md, docs/quick-start-extended.md, docs/guides/observability.md, docs/guides/enable-keystone-operator-metrics.md, docs/guides/enable-keystone-operator-networkpolicy.md, docs/reference/backend/keystone-operator-packaging.md, docs/reference/infrastructure/infrastructure-manifests.md, docs/reference/testing/chaos-e2e-tests.md) SHALL be updated to reference keystone-system for operator-pod lookups and the new Namespace inventory.",
+      "priority": "SHALL",
+      "rationale": "Copy-paste commands in Quick Start guides are the primary onboarding path; mismatched namespaces would produce empty `kubectl get pods` output and silent confusion.",
+      "scenarios": [
+        {
+          "name": "Operator-pod kubectl examples are updated",
+          "when": "every `kubectl … -n openstack … app.kubernetes.io/name=keystone-operator` occurrence is audited",
+          "then": "the namespace is changed to keystone-system; workload-pod examples (`app.kubernetes.io/name=keystone`) keep openstack",
+          "and_then": []
+        },
+        {
+          "name": "Namespace inventory tables match deploy/",
+          "when": "docs/reference/infrastructure/infrastructure-manifests.md tables (lines ~62 and ~461) are parsed",
+          "then": "the table lists keystone-system and monitoring; monitoring-system is gone",
+          "and_then": []
+        },
+        {
+          "name": "keystone-operator-packaging.md target namespace updated",
+          "when": "the `Target namespace` row in the packaging doc is read",
+          "then": "the value is keystone-system, and the Dependency Chain ASCII diagram lists keystone-operator (keystone-system namespace) — not openstack",
+          "and_then": []
+        },
+        {
+          "name": "chaos-e2e-tests.md selectors updated",
+          "when": "the chaos suite reference doc is reviewed",
+          "then": "any text claiming `app.kubernetes.io/name: keystone-operator in openstack` is updated to keystone-system; the diagnostics.sh invocation example is updated likewise",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "description": "Architecture documentation under architecture/docs/05-deployment/ SHALL include a Namespace policy section that explicitly states: (a) controllers live in a dedicated <service>-system Namespace; (b) workloads/CRs live in their tenant Namespace; (c) one Helm release ↔ one Namespace.",
+      "priority": "SHALL",
+      "rationale": "The convention is enforced today only by tribal knowledge — codifying it prevents future regressions like the keystone-operator/openstack overlap.",
+      "scenarios": [
+        {
+          "name": "Policy doc exists and is linked",
+          "when": "architecture/docs/05-deployment/index.md is read",
+          "then": "it links to a new sibling page (e.g. 04-namespace-policy.md) describing the convention",
+          "and_then": []
+        },
+        {
+          "name": "Policy enumerates current assignments",
+          "when": "the policy page is read",
+          "then": "it lists every controller Namespace (cert-manager, external-secrets, mariadb-system, memcached-system, openbao-system, keystone-system, monitoring) and every tenant Namespace (openstack) with the rationale for each",
+          "and_then": []
+        },
+        {
+          "name": "Out-of-scope items called out",
+          "when": "the policy page is read",
+          "then": "it explicitly defers (a) renaming chaos-mesh to chaos-mesh-system and (b) aliasing upstream-default bare names (cert-manager, external-secrets) to -system form, as future work",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-014",
+      "description": "A migration runbook SHALL be documented (either inside the policy doc or as a sibling how-to) covering the suspend → uninstall → annotation-cleanup → reinstall sequence required when moving an existing keystone-operator release between Namespaces.",
+      "priority": "SHALL",
+      "rationale": "Helm cannot relocate a release between Namespaces in-place; without a runbook, operators of an existing cluster would brick the controller during the upgrade.",
+      "scenarios": [
+        {
+          "name": "Runbook covers the four-step sequence",
+          "when": "the runbook is read",
+          "then": "it documents (1) `flux suspend hr keystone-operator -n openstack`, (2) `helm uninstall keystone-operator -n openstack` (or `flux delete hr` with prune), (3) cleanup of meta.helm.sh/release-namespace=openstack annotations on the keystone-operator ClusterRole / ClusterRoleBinding, (4) `flux resume` once the manifest points at keystone-system",
+          "and_then": []
+        },
+        {
+          "name": "Webhook downtime called out",
+          "when": "the runbook is read",
+          "then": "it warns that the admission webhook is briefly unavailable while the new Pod starts in keystone-system and recommends pausing Keystone-CR write traffic during the cutover",
+          "and_then": []
+        },
+        {
+          "name": "Data preservation called out",
+          "when": "the runbook is read",
+          "then": "it states explicitly that existing Keystone CRs in openstack are not deleted; the move affects only the controller Pod / RBAC / webhook Service / Certificate",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-015",
+      "description": "The Keystone CR sample and the operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy) SHALL remain in the openstack Namespace; openstack is the tenant Namespace, not a controller Namespace.",
+      "priority": "SHALL",
+      "rationale": "Workload churn would expand the blast radius beyond what the issue requests; the controller-vs-workload split is the entire point of this change.",
+      "scenarios": [
+        {
+          "name": "Sample CR unchanged",
+          "when": "the top-level keystone.yaml sample is diffed",
+          "then": "metadata.namespace is openstack (unchanged)",
+          "and_then": []
+        },
+        {
+          "name": "Operator-managed payload still lands in openstack",
+          "when": "a Keystone CR is reconciled to Ready=True",
+          "then": "the resulting Keystone Deployment, Secrets, HTTPRoute, and NetworkPolicy all live in openstack",
+          "and_then": []
+        },
+        {
+          "name": "ExternalSecrets, MariaDB CR, Memcached CR, Gateway unchanged",
+          "when": "deploy/eso/, deploy/kind/infrastructure/, deploy/kind/base/openstack-gateway.yaml are diffed",
+          "then": "all referenced namespaces remain openstack / envoy-gateway-system as before",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-016",
+      "description": "tests/unit/deploy/production_posture_test.sh SHALL be either updated to accept the new keystone-system / monitoring layout or left to naturally pass once origin/main reflects the merged PR; the decision SHALL be documented in the PR description.",
+      "priority": "SHALL",
+      "rationale": "The test enforces byte-identity of deploy/flux-system/releases/* against origin/main. CC-0105 intentionally changes those files; without acknowledgement, the CI signal is ambiguous.",
+      "scenarios": [
+        {
+          "name": "Test posture documented",
+          "when": "the PR description is read",
+          "then": "it explicitly lists deploy/flux-system/namespaces.yaml, deploy/flux-system/releases/keystone-operator.yaml, deploy/flux-system/releases/prometheus-operator-crds.yaml, deploy/flux-system/releases/memcached-operator.yaml as the intentional production-overlay changes",
+          "and_then": []
+        },
+        {
+          "name": "Test passes after merge to main",
+          "when": "the test runs on a fresh branch off the merged main",
+          "then": "all assertions pass without modification",
+          "and_then": []
+        },
+        {
+          "name": "Test does not silently mask future regressions",
+          "when": "the test or its assertions are reviewed",
+          "then": "any new carve-out is bounded to CC-0105 files and not a blanket exclusion of deploy/flux-system/releases/",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-017",
+      "description": "`make kind-up` on a clean cluster followed by two consecutive `make e2e` runs SHALL pass without flakes after the migration.",
+      "priority": "SHALL",
+      "rationale": "Definition-of-done item from the issue (parallel: 4, two consecutive runs without flakes).",
+      "scenarios": [
+        {
+          "name": "Clean cluster reconciles",
+          "when": "`make kind-up` runs from an empty kind cluster",
+          "then": "all HelmReleases (cert-manager, mariadb-operator, memcached-operator, openbao, prometheus-operator-crds, keystone-operator) reach Ready=True",
+          "and_then": []
+        },
+        {
+          "name": "E2E suites green",
+          "when": "`make e2e` runs after `make kind-up`",
+          "then": "all Chainsaw suites under tests/e2e/keystone/ and tests/e2e/keystone-operator/ pass",
+          "and_then": []
+        },
+        {
+          "name": "Second consecutive run still green",
+          "when": "`make e2e` runs a second time without recreating the cluster",
+          "then": "all suites pass again (no flake)",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Update deploy/flux-system/namespaces.yaml: add Namespace resources for keystone-system and monitoring; remove monitoring-system. Preserve SPDX header and feature-ID comment style (append CC-0105 to the existing CC-0008/CC-0009 marker). (REQ-002, REQ-003, REQ-004)",
+      "level": 1,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Update deploy/flux-system/releases/keystone-operator.yaml: change metadata.namespace from openstack to keystone-system; leave dependsOn entries unchanged; add CC-0105 to the feature header. Verify install.createNamespace remains true so the manifest still bootstraps cleanly. (REQ-001)",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "1.3",
+      "title": "Update deploy/flux-system/releases/prometheus-operator-crds.yaml: change metadata.namespace from monitoring-system to monitoring; add CC-0105 to the feature header. (REQ-005)",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "1.4",
+      "title": "Update deploy/flux-system/releases/memcached-operator.yaml: change spec.dependsOn entry for prometheus-operator-crds from namespace: monitoring-system to namespace: monitoring; verify no installCRDs.namespace patch references monitoring-system; add CC-0105 to the header. (REQ-006)",
+      "level": 1,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "1.5",
+      "title": "Write tests/unit/deploy/namespaces_test.sh asserting (a) keystone-system Namespace declared, (b) monitoring Namespace declared, (c) monitoring-system Namespace absent, (d) no HelmRelease under deploy/flux-system/releases/ references monitoring-system. Follow the assertion style of tests/unit/deploy/production_posture_test.sh. (REQ-002, REQ-003, REQ-004)",
+      "level": 1,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-002",
+        "REQ-003",
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "1.6",
+      "title": "Write tests/unit/deploy/helmrelease_namespaces_test.sh asserting (a) keystone-operator HelmRelease metadata.namespace==keystone-system, (b) prometheus-operator-crds HelmRelease metadata.namespace==monitoring, (c) memcached-operator dependsOn for prometheus-operator-crds points to monitoring, (d) keystone-operator dependsOn list (cert-manager/mariadb-system/memcached-system/external-secrets) is unchanged. Use yq if available, else awk + grep. (REQ-001, REQ-005, REQ-006)",
+      "level": 1,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "Update deploy/kind/base/kustomization.yaml: change the keystone-operator suspend-patch target's metadata.namespace from openstack to keystone-system on BOTH the patch target block and the inline patch body. Re-evaluate the explanatory comment (lines 87-92) — if the ownership-conflict workaround is obsolete after the move, remove it; otherwise update it with a DECISION comment naming why it stays. Add CC-0105 feature marker. (REQ-007)",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Decide and apply the kind/prometheus overlay coordination: keep the inline monitoring Namespace declaration with an updated comment (self-contained kubectl apply -k under LoadRestrictionsRootOnly is the original justification) OR drop it now that the base declares the Namespace. Capture the choice as a DECISION comment in deploy/kind/prometheus/namespace.yaml (or removal commit message). Verify `kustomize build deploy/kind/base` produces exactly one monitoring Namespace. (REQ-008)",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "2.3",
+      "title": "Write tests/unit/deploy/kind_overlay_test.sh asserting (a) kustomize build deploy/kind/base renders the keystone-operator HelmRelease in keystone-system with suspend==true, (b) the monitoring Namespace appears exactly once in the rendered output. Use kustomize (already in test deps) and jq/yq. (REQ-007, REQ-008)",
+      "level": 2,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-007",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "Add operators/keystone/helm/keystone-operator/tests/release_namespace_test.yaml (new helm-unittest suite) installing the chart with --namespace keystone-system and asserting every namespaced resource has metadata.namespace==keystone-system; cert-manager.io/inject-ca-from annotation on the webhook configuration is keystone-system/<fullname>-webhook; ClusterRoleBinding subjects[0].namespace==keystone-system. Follow the structure of operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml. (REQ-009)",
+      "level": 3,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Run `helm unittest operators/keystone/helm/keystone-operator/` and `make helm-test`; fix any test that hard-codes openstack as the release namespace by parameterizing or updating the expected value. Do NOT remove any existing CC-0089/CC-0090 assertions. (REQ-009)",
+      "level": 3,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Update hack/ci-deploy-operator.sh: append `--namespace keystone-system --create-namespace` to the `helm install` invocation (or set a NAMESPACE variable at the top with default keystone-system); also pass --namespace to the helm status / kubectl wait calls. Update the script header comment to reflect the new default. (REQ-011)",
+      "level": 4,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Update tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml: change the podLogs entry with selector app.kubernetes.io/name=keystone-operator to use namespace: keystone-system. Leave all other podLogs entries (workload, envoy-gateway-system) unchanged. (REQ-010)",
+      "level": 4,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.3",
+      "title": "Update tests/e2e/keystone/metrics/chainsaw-test.yaml: change `helm install --namespace openstack` to `--namespace keystone-system --create-namespace`; update step-2 ServiceMonitor assertion namespace to keystone-system; update all kubectl get/logs/events `-n openstack` references that target the operator pod to `-n keystone-system`. Keep Keystone CR-related lookups (if any) on openstack. (REQ-010)",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.4",
+      "title": "Update tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml: change the spec.namespace (suite-level) and `helm install --namespace openstack` to keystone-system; update NetworkPolicy assertion in step 2 to namespace keystone-system; update kubectl get/logs/events lookups for the operator pod and rendered NetworkPolicy to keystone-system. Leave the test's Keystone CR (which lives in openstack) namespace untouched in step 3. (REQ-010)",
+      "level": 4,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.5",
+      "title": "Update tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml: in each catch block, change the operator-log dump line (`kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keystone-operator`) to use a fixed `-n keystone-system` instead of $NAMESPACE; keep Keystone CR / workload dumps on $NAMESPACE. Add a header comment explaining the operator-vs-workload namespace split. (REQ-010)",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.6",
+      "title": "Audit tests/e2e/keystone/{basic-deployment,basic-deployment-2026-1,httproute,network-policy,autoscaling,gateway-quick-start-smoke}/chainsaw-test.yaml for any operator-pod selector that still uses `-n openstack`. Update only those that target the operator; leave Keystone CR / workload lookups on openstack. Document each change with an inline CC-0105 comment. (REQ-010, REQ-015)",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-010",
+        "REQ-015"
+      ]
+    },
+    {
+      "id": "4.7",
+      "title": "Decide tests/e2e/keystone/namespace-scoped-rbac/chainsaw-test.yaml posture: this test's intent is to validate namespace-scoped RBAC (operator can only watch CRs in its release namespace). Either (a) keep operator+CR in openstack (legitimate namespace-scoped scenario, distinct from the cluster-scoped default) or (b) move both to keystone-system. Capture the choice as a DECISION comment in the file header. (REQ-010)",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-010"
+      ]
+    },
+    {
+      "id": "4.8",
+      "title": "Write tests/unit/hack/ci_deploy_operator_namespace_test.sh asserting hack/ci-deploy-operator.sh passes --namespace keystone-system --create-namespace to helm install. Follow the style of tests/unit/hack/install_test_deps_optional_flux_test.sh. (REQ-011)",
+      "level": 4,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-011"
+      ]
+    },
+    {
+      "id": "5.1",
+      "title": "Create architecture/docs/05-deployment/04-namespace-policy.md documenting (a) the controller-in-dedicated-Namespace rule, (b) the controller-vs-workload split, (c) one-Helm-release-per-Namespace, (d) the per-service Namespace inventory (cert-manager, external-secrets, mariadb-system, memcached-system, openbao-system, keystone-system, monitoring, openstack). Reference CC-0105. Note follow-ups: chaos-mesh rename, upstream-default bare-name aliasing. (REQ-013)",
+      "level": 5,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-013"
+      ]
+    },
+    {
+      "id": "5.2",
+      "title": "Add a 'Migration: moving a HelmRelease between Namespaces' section inside 04-namespace-policy.md (or a sibling architecture/docs/05-deployment/05-helmrelease-migration.md) documenting the suspend → uninstall → annotation-cleanup → reinstall sequence with the keystone-operator move as the worked example. Include the Webhook downtime warning and the data-preservation note. (REQ-014)",
+      "level": 5,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-014"
+      ]
+    },
+    {
+      "id": "5.3",
+      "title": "Update architecture/docs/05-deployment/index.md to link to the new 04-namespace-policy.md page (and migration section if separate). Keep the existing links intact. (REQ-013)",
+      "level": 5,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-013"
+      ]
+    },
+    {
+      "id": "5.4",
+      "title": "Write tests/unit/architecture/namespace_policy_doc_test.sh asserting (a) 04-namespace-policy.md exists, (b) is linked from index.md, (c) mentions all current service Namespaces by name, (d) references CC-0105, (e) contains the migration runbook keywords (suspend, uninstall, meta.helm.sh/release-namespace, reinstall). (REQ-013, REQ-014)",
+      "level": 5,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-013",
+        "REQ-014"
+      ]
+    },
+    {
+      "id": "6.1",
+      "title": "Update docs/quick-start.md and docs/quick-start-extended.md: change `kubectl get pods -n openstack -l app.kubernetes.io/name=keystone-operator` (and similar operator-pod commands) to `-n keystone-system`. Add a one-line callout in Step 4 explaining controller-vs-workload namespace split. Keep Keystone-workload (`-l app.kubernetes.io/name=keystone`) examples on `-n openstack`. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.2",
+      "title": "Update docs/guides/observability.md: change the two operator-log commands (`-n openstack -l app.kubernetes.io/name=keystone-operator …`) to `-n keystone-system`; leave Keystone-workload log examples on `-n openstack`. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 10,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.3",
+      "title": "Update docs/guides/enable-keystone-operator-networkpolicy.md and docs/guides/enable-keystone-operator-metrics.md: change every operator-pod / operator-service example namespace from openstack (or openstack-operators in the metrics guide) to keystone-system; verify hyperlinks to reference docs still resolve. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.4",
+      "title": "Update docs/reference/backend/keystone-operator-packaging.md: change `Target namespace` row (line ~400) from openstack to keystone-system; update the Dependency Chain ASCII diagram (line ~444) `keystone-operator (openstack namespace)` to `keystone-operator (keystone-system namespace)`; update any other openstack→keystone-system references for the operator. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.5",
+      "title": "Update docs/reference/infrastructure/infrastructure-manifests.md: (a) replace `monitoring-system` with `keystone-system` (and add `monitoring`) in the namespace inventory table (~line 62); (b) replace `monitoring-system` with `monitoring` in the prometheus-operator-crds row (~line 209); (c) update memcached-operator Dependencies row (~line 284); (d) update Namespace count and inventory in the overall summary (~line 461); (e) update Resource count if changed. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.6",
+      "title": "Update docs/reference/testing/chaos-e2e-tests.md: change `app.kubernetes.io/name: keystone-operator` namespace references from `openstack` to `keystone-system` in the chaos test reference (~lines 308, 316, 525, 745, 828, 848). Verify the diagnostics.sh invocation example still resolves. (REQ-012)",
+      "level": 6,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-012"
+      ]
+    },
+    {
+      "id": "6.7",
+      "title": "Write tests/unit/docs/namespace_consistency_test.sh asserting: (a) no current-state monitoring-system mention in docs/ or architecture/docs/ (allow comments tagged 'historical' or '(migrated to monitoring)'); (b) every `kubectl … -l app.kubernetes.io/name=keystone-operator` example uses `-n keystone-system`; (c) every `kubectl … -l app.kubernetes.io/name=keystone` example uses `-n openstack` (regression guard for REQ-015). (REQ-012, REQ-015)",
+      "level": 6,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-012",
+        "REQ-015"
+      ]
+    },
+    {
+      "id": "7.1",
+      "title": "Write tests/integration/deploy/kustomize_render_test.sh asserting (a) kustomize build deploy/flux-system renders without error and contains the expected Namespaces + HelmReleases in the right Namespaces, (b) kustomize build deploy/kind/base renders without error after the patches, (c) zero references to monitoring-system in the rendered output. Use yq for assertions. (REQ-001, REQ-005, REQ-006, REQ-007)",
+      "level": 7,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-001",
+        "REQ-005",
+        "REQ-006",
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "7.2",
+      "title": "Add tests/integration/ci/full_kind_up_test.sh (or extend an existing integration harness) running `make kind-up`, then asserting (a) kubectl get pods -n keystone-system shows the controller Running, (b) kubectl get pods -n openstack does NOT list the controller, (c) all HelmReleases under deploy/flux-system/releases reach Ready=True. Gate on KIND availability with a graceful SKIP if not present. (REQ-017)",
+      "level": 7,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-017"
+      ]
+    },
+    {
+      "id": "7.3",
+      "title": "Run `make kind-up` followed by `make e2e` twice consecutively on a clean kind cluster. Investigate and fix any flakes; do not silence them. If a flake is unrelated to CC-0105, file a follow-up issue and document the SKIP in this task's commit message. (REQ-017)",
+      "level": 7,
+      "estimate_minutes": 30,
+      "requirements": [
+        "REQ-017"
+      ]
+    },
+    {
+      "id": "8.1",
+      "title": "Review tests/unit/deploy/production_posture_test.sh behavior on the CC-0105 branch: the test compares deploy/flux-system/releases/* to origin/main and will report a diff on this PR by design. Document in the PR body which files are intentionally changed (namespaces.yaml, releases/keystone-operator.yaml, releases/prometheus-operator-crds.yaml, releases/memcached-operator.yaml). Do NOT add a blanket exclusion; do NOT modify the test logic unless absolutely required. If a CI gate blocks merge, add a narrowly-scoped per-path carve-out tagged CC-0105 with a TODO to remove after merge. (REQ-016)",
+      "level": 8,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-016"
+      ]
+    },
+    {
+      "id": "8.2",
+      "title": "Final cross-reference audit: re-run grep -rn 'monitoring-system' across the repo; re-run grep -rn 'openstack' for any remaining operator-pod selectors. Verify ALL findings fall into one of: (a) workload references (correct), (b) historical/migration notes (acceptable), (c) updated to keystone-system / monitoring (correct). Append findings table to the PR description. (REQ-003, REQ-012)",
+      "level": 8,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003",
+        "REQ-012"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "tests/unit/deploy/namespaces_test.sh",
+      "test_function": "test_keystone_system_namespace_declared",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "deploy/flux-system/namespaces.yaml contains a Namespace resource named keystone-system [unit]",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "tests/unit/deploy/namespaces_test.sh",
+      "test_function": "test_monitoring_namespace_declared",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "deploy/flux-system/namespaces.yaml contains a Namespace resource named monitoring [unit]",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/unit/deploy/namespaces_test.sh",
+      "test_function": "test_monitoring_system_namespace_removed",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "deploy/flux-system/namespaces.yaml contains NO Namespace resource named monitoring-system [unit]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/unit/deploy/namespaces_test.sh",
+      "test_function": "test_no_helmrelease_targets_monitoring_system",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "grep -r monitoring-system deploy/flux-system/releases returns zero matches [unit]",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "tests/unit/deploy/helmrelease_namespaces_test.sh",
+      "test_function": "test_keystone_operator_release_namespace",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "deploy/flux-system/releases/keystone-operator.yaml has metadata.namespace == keystone-system [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/unit/deploy/helmrelease_namespaces_test.sh",
+      "test_function": "test_prometheus_operator_crds_release_namespace",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "deploy/flux-system/releases/prometheus-operator-crds.yaml has metadata.namespace == monitoring [unit]",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "tests/unit/deploy/helmrelease_namespaces_test.sh",
+      "test_function": "test_memcached_operator_dependsOn_monitoring",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "deploy/flux-system/releases/memcached-operator.yaml dependsOn for prometheus-operator-crds has namespace: monitoring [unit]",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "tests/unit/deploy/helmrelease_namespaces_test.sh",
+      "test_function": "test_keystone_operator_dependson_unchanged",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "deploy/flux-system/releases/keystone-operator.yaml dependsOn list still contains cert-manager / mariadb-operator / memcached-operator / external-secrets in their existing namespaces (regression guard) [unit]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/unit/deploy/kind_overlay_test.sh",
+      "test_function": "test_kind_base_patches_keystone_operator_in_keystone_system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "kustomize build deploy/kind/base renders the keystone-operator HelmRelease with metadata.namespace==keystone-system and spec.suspend==true [unit]",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/unit/deploy/kind_overlay_test.sh",
+      "test_function": "test_monitoring_namespace_rendered_once",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "kustomize build deploy/kind/base produces exactly one Namespace resource named monitoring (no duplicates across base + prometheus overlays) [unit]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/release_namespace_test.yaml",
+      "test_function": "should-render-into-arbitrary-release-namespace",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "Helm unittest installs the chart with --namespace keystone-system and asserts every namespaced resource has metadata.namespace==keystone-system; ClusterRoleBinding subjects[0].namespace==keystone-system [unit]",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "operators/keystone/helm/keystone-operator/tests/release_namespace_test.yaml",
+      "test_function": "webhook-injection-annotation-uses-release-namespace",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "When release namespace is keystone-system, cert-manager.io/inject-ca-from annotation on the webhook configuration is keystone-system/<fullname>-webhook [unit]",
+      "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "tests/unit/hack/ci_deploy_operator_namespace_test.sh",
+      "test_function": "test_ci_deploy_operator_installs_into_keystone_system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "Shellcheck/grep over hack/ci-deploy-operator.sh confirms the helm install command passes --namespace keystone-system --create-namespace [unit]",
+      "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "tests/unit/docs/namespace_consistency_test.sh",
+      "test_function": "test_no_doc_references_monitoring_system_as_current_state",
+      "story": "End-user follows quick-start docs and finds the operator in keystone-system",
+      "expected": "grep monitoring-system over docs/ and architecture/docs/ produces no current-state hits (only historical/migration notes are allowed if any) [unit]",
+      "requirement_id": "REQ-012"
+    },
+    {
+      "test_file": "tests/unit/docs/namespace_consistency_test.sh",
+      "test_function": "test_operator_pod_kubectl_examples_use_keystone_system",
+      "story": "End-user follows quick-start docs and finds the operator in keystone-system",
+      "expected": "Every kubectl example referencing the operator pod (matching app.kubernetes.io/name=keystone-operator) under docs/ uses -n keystone-system [unit]",
+      "requirement_id": "REQ-012"
+    },
+    {
+      "test_file": "tests/unit/docs/namespace_consistency_test.sh",
+      "test_function": "test_workload_kubectl_examples_unchanged",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "Every kubectl example referencing the Keystone workload (app.kubernetes.io/name=keystone) still uses -n openstack (regression guard for REQ-015) [unit]",
+      "requirement_id": "REQ-015"
+    },
+    {
+      "test_file": "tests/unit/architecture/namespace_policy_doc_test.sh",
+      "test_function": "test_namespace_policy_page_exists",
+      "story": "Architect documents the Namespace policy so future services land consistently",
+      "expected": "architecture/docs/05-deployment/04-namespace-policy.md exists and is linked from architecture/docs/05-deployment/index.md [unit]",
+      "requirement_id": "REQ-013"
+    },
+    {
+      "test_file": "tests/unit/architecture/namespace_policy_doc_test.sh",
+      "test_function": "test_namespace_policy_lists_all_services",
+      "story": "Architect documents the Namespace policy so future services land consistently",
+      "expected": "The policy page enumerates cert-manager, external-secrets, mariadb-system, memcached-system, openbao-system, keystone-system, monitoring, openstack and references CC-0105 [unit]",
+      "requirement_id": "REQ-013"
+    },
+    {
+      "test_file": "tests/unit/architecture/namespace_policy_doc_test.sh",
+      "test_function": "test_migration_runbook_present",
+      "story": "Release manager performs the controller relocation without losing Keystone CRs",
+      "expected": "The policy page (or sibling runbook) documents the suspend→uninstall→annotation-cleanup→reinstall sequence [unit]",
+      "requirement_id": "REQ-014"
+    },
+    {
+      "test_file": "tests/e2e/keystone/gateway-quick-start/chainsaw-test.yaml",
+      "test_function": "podLogs operator namespace == keystone-system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "The podLogs entry for selector app.kubernetes.io/name=keystone-operator targets namespace keystone-system; full suite reaches Ready=True end-to-end on kind [e2e]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/e2e/keystone/metrics/chainsaw-test.yaml",
+      "test_function": "ServiceMonitor exists in keystone-system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "After helm install --namespace keystone-system, a ServiceMonitor with name keystone-operator-metrics is asserted present in namespace keystone-system [e2e]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml",
+      "test_function": "NetworkPolicy exists in keystone-system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "After helm install --namespace keystone-system, a NetworkPolicy named keystone-operator-netpol is asserted present in namespace keystone-system; Keystone CR in openstack still reaches Ready=True under the unenforced policy [e2e]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/e2e/keystone/basic-deployment-2026-1/chainsaw-test.yaml",
+      "test_function": "Keystone CR reconciles to Ready under new operator namespace",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "After ci-deploy-operator.sh installs the operator into keystone-system, a Keystone CR in openstack reconciles to Ready=True end-to-end (regression guard for REQ-015) [e2e]",
+      "requirement_id": "REQ-015"
+    },
+    {
+      "test_file": "tests/e2e/keystone/prometheus-stack/chainsaw-test.yaml",
+      "test_function": "kube-prometheus-stack scrapes operator across namespaces",
+      "story": "Platform operator finds one canonical monitoring Namespace instead of two",
+      "expected": "kube-prometheus-stack in monitoring discovers the ServiceMonitor in keystone-system via the cross-namespace selector (serviceMonitorNamespaceSelector: {}) [e2e]",
+      "requirement_id": "REQ-008"
+    },
+    {
+      "test_file": "tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml",
+      "test_function": "operator log catch-block targets keystone-system",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "When a step fails, the catch block dumps operator logs from namespace keystone-system (not $NAMESPACE/openstack); workload log dumps still use $NAMESPACE/openstack [e2e]",
+      "requirement_id": "REQ-010"
+    },
+    {
+      "test_file": "tests/integration/deploy/kustomize_render_test.sh",
+      "test_function": "test_flux_system_renders_with_new_namespaces",
+      "story": "Platform operator deploys keystone-operator in its own dedicated Namespace",
+      "expected": "kustomize build deploy/flux-system produces a manifest containing keystone-system + monitoring Namespaces, keystone-operator HelmRelease in keystone-system, prometheus-operator-crds HelmRelease in monitoring, and no monitoring-system references [integration]",
+      "requirement_id": "REQ-001"
+    },
+    {
+      "test_file": "tests/integration/deploy/kustomize_render_test.sh",
+      "test_function": "test_kind_base_renders_after_namespace_changes",
+      "story": "CI engineer keeps existing Chainsaw e2e suites green after the controller migration",
+      "expected": "kustomize build deploy/kind/base completes without errors and applies the keystone-operator suspend patch to the HelmRelease in keystone-system [integration]",
+      "requirement_id": "REQ-007"
+    },
+    {
+      "test_file": "tests/integration/ci/full_kind_up_test.sh",
+      "test_function": "test_make_kind_up_brings_operator_online_in_keystone_system",
+      "story": "Release manager performs the controller relocation without losing Keystone CRs",
+      "expected": "After `make kind-up`, kubectl get pods -n keystone-system shows the controller Pod Running and kubectl get pods -n openstack does NOT list the controller Pod [integration]",
+      "requirement_id": "REQ-017"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "BLOCKER: deploy/flux-system/releases/keystone-operator.yaml has metadata.namespace == keystone-system; keystone-system Namespace is declared in deploy/flux-system/namespaces.yaml (REQ-001, REQ-002)",
+    "BLOCKER: deploy/flux-system/releases/prometheus-operator-crds.yaml has metadata.namespace == monitoring; memcached-operator dependsOn references monitoring; monitoring Namespace is declared in deploy/flux-system/namespaces.yaml; monitoring-system Namespace is removed (REQ-003, REQ-004, REQ-005, REQ-006)",
+    "BLOCKER: deploy/kind/base/kustomization.yaml's keystone-operator suspend patch targets metadata.namespace: keystone-system on BOTH the patch target and the inline body; CI's kind matrix continues to install the dev image (REQ-007)",
+    "CRITICAL: helm unittest passes (`make helm-test`); the new release_namespace_test.yaml verifies the chart renders correctly with --namespace keystone-system (REQ-009)",
+    "CRITICAL: All four CI matrix jobs invoking hack/ci-deploy-operator.sh install the operator into keystone-system; subsequent kubectl waits and Chainsaw assertions resolve (REQ-011)",
+    "CRITICAL: Existing Chainsaw suites (gateway-quick-start, metrics, network-policy-egress, semantic-invariants, basic-deployment*) pass on a clean kind cluster after operator-pod selectors are repointed to keystone-system; Keystone CR / workload assertions remain on openstack (REQ-010, REQ-015, REQ-017)",
+    "CRITICAL: The Keystone CR sample, ExternalSecrets, MariaDB CR, Memcached CR, Gateway and operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy) all still live in the openstack Namespace — no workload churn (REQ-015)",
+    "MAJOR: docs/quick-start.md, docs/quick-start-extended.md, docs/guides/observability.md, docs/guides/enable-keystone-operator-{metrics,networkpolicy}.md, docs/reference/backend/keystone-operator-packaging.md, docs/reference/infrastructure/infrastructure-manifests.md, docs/reference/testing/chaos-e2e-tests.md all reference keystone-system for operator commands and the updated Namespace inventory (REQ-012)",
+    "MAJOR: architecture/docs/05-deployment/04-namespace-policy.md exists, is linked from index.md, lists every current service Namespace, and contains the migration runbook (REQ-013, REQ-014)",
+    "MINOR: tests/unit/deploy/{namespaces,helmrelease_namespaces,kind_overlay}_test.sh and tests/unit/docs/namespace_consistency_test.sh exist and run from `make test-shell` (or equivalent), guarding against regressions (REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-012)",
+    "MINOR: Stale comments and decision rationale captured: any DECISION comment near deploy/kind/base/kustomization.yaml:87-92 and deploy/kind/prometheus/namespace.yaml is updated for the new Namespace layout; no orphan references to meta.helm.sh/release-namespace=openstack remain except in historical context (REQ-007, REQ-008)",
+    "MINOR: PR description explicitly lists the four intentionally-changed production-overlay files (namespaces.yaml, releases/keystone-operator.yaml, releases/prometheus-operator-crds.yaml, releases/memcached-operator.yaml) so tests/unit/deploy/production_posture_test.sh failure is interpretable (REQ-016)"
+  ],
+  "implementation_notes": "ARCHITECTURE DECISION SUMMARY\n\nDecision 1 — Operator Namespace: keystone-system.\n  Why: aligns with cert-manager (`cert-manager`), mariadb-operator (`mariadb-system`), memcached-operator (`memcached-system`), openbao (`openbao-system`). The `-system` suffix is the SAP-style convention used throughout. Bare names (`cert-manager`, `external-secrets`) are kept only because they are upstream chart defaults — discussed and deferred in the policy doc.\n\nDecision 2 — Monitoring collapse target: monitoring (not monitoring-system).\n  Why: the live deployment, helm chart tests, NetworkPolicy selectors (`operators/keystone/internal/controller/reconcile_networkpolicy_test.go:178,540`, `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml`), and the kind-only kube-prometheus-stack release ALL use `monitoring`. The unused `monitoring-system` Namespace is the cheaper Namespace to drop. Renaming `monitoring` → `monitoring-system` would touch significantly more code and test fixtures with no functional gain.\n\nDecision 3 — Keystone CR + payload stays in openstack.\n  Why: `openstack` is a tenant Namespace, not a controller Namespace. The split mirrors cert-manager's pattern: controller in `cert-manager`, `Certificate` CRs in user Namespaces. The reconciler-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy) follows the CR.\n\nDecision 4 — Migration path: this is NOT a Helm in-place upgrade.\n  Helm cannot move a release between Namespaces. The cutover for any existing cluster requires: `flux suspend hr keystone-operator -n openstack` → `helm uninstall keystone-operator -n openstack` (or `flux delete hr` with prune) → clean up `meta.helm.sh/release-namespace=openstack` annotations on the keystone-operator ClusterRole and ClusterRoleBinding (otherwise the reinstall in keystone-system errors with the annotation conflict that the kind suspend-patch comment already documents) → `flux resume`. Existing Keystone CRs are not deleted.\n\nDecision 5 — kind/prometheus overlay coordination.\n  Two valid options: (a) keep the inline `namespace.yaml` (self-contained, `kubectl apply -k` works under LoadRestrictionsRootOnly per kubectl#948); (b) drop it now that the base declares the Namespace. Recommendation: KEEP IT (option a) — the original CC-0100 self-containment justification still holds when `kubectl apply -k deploy/kind/prometheus` is invoked outside the kind base. Document the redundancy with a DECISION comment.\n\nARCHITECTURE DIAGRAM\n\n```\n                ┌─────────────────────────────────────────────────────────┐\n                │              Cluster-scoped controllers                 │\n                │                                                         │\n   cert-manager │ flux-system   monitoring   mariadb-system   memcached-system   external-secrets   openbao-system   keystone-system │\n                │     ↓             ↓              ↓                ↓                  ↓                   ↓                ↓        │\n                │ flux-operator  prom-CRDs   mariadb-operator   memcached-op    external-secrets    openbao server   keystone-operator │\n                │                kube-prom    + CRDs            + CRDs                                                + webhook       │\n                │                stack                                                                                + ServiceMonitor│\n                └─────────────────────────────────────────────────────────┘\n                                                                                                                            │\n                                                                                                                            │ watches\n                                                                                                                            ▼\n                                                                       ┌─────────────────────────────────────────────────────────┐\n                                                                       │              Tenant Namespace: openstack                │\n                                                                       │                                                         │\n                                                                       │   Keystone CR  ──►  Deployment + Service + HTTPRoute    │\n                                                                       │                ──►  Secrets (ExternalSecrets-managed)   │\n                                                                       │                ──►  NetworkPolicy                       │\n                                                                       │                                                         │\n                                                                       │   MariaDB CR (openstack-db)                              │\n                                                                       │   Memcached CR (openstack-memcached)                     │\n                                                                       │   Gateway (openstack-gw, kind-only)                      │\n                                                                       └─────────────────────────────────────────────────────────┘\n```\n\nDATA FLOW (controller-vs-workload split)\n\n```\n[apply Keystone CR] ─► [kube-apiserver]\n                              │\n                              ▼\n                     [Mutating Webhook]    ◄── keystone-system/keystone-operator-mutating (Service in keystone-system)\n                              │\n                              ▼\n                  [openstack/Keystone (CR)]\n                              │\n                              ▼\n              [keystone-operator controller]   ◄── runs in keystone-system, ClusterRole-scoped\n                              │ reconciles into openstack\n                              ▼\n      [openstack/Deployment + Secret + HTTPRoute + NetworkPolicy]\n```\n\nPITFALLS\n\n  1. Forgetting to update the kind suspend-patch namespace (deploy/kind/base/kustomization.yaml:97-104) is the most likely silent regression — the patch becomes a no-op and Flux will reconcile the published chart on top of the CI's dev image. Catch with tests/unit/deploy/kind_overlay_test.sh.\n  2. Forgetting cert-manager Certificate Namespace: the chart renders a Certificate via `templates/certificate.yaml` using `{{ .Release.Namespace }}`. After the move, the Certificate lives in keystone-system. Verify cert-manager picks it up there (cert-manager is cluster-scoped so this works automatically).\n  3. Forgetting that the webhook Service's DNS name changes from `<svc>.openstack.svc` to `<svc>.keystone-system.svc`. The cert-manager.io/inject-ca-from annotation already uses `{{ .Release.Namespace }}` so the caBundle injection target also moves — both sides update in lockstep. Verify with `helm template`.\n  4. Forgetting that meta.helm.sh/release-namespace annotations on the ClusterRole and ClusterRoleBinding persist across uninstalls when Helm does NOT remove cluster-scoped resources (it does by default — but on a partial cleanup they linger). Document in the migration runbook.\n  5. `tests/e2e/keystone/semantic-invariants/chainsaw-test.yaml` mixes operator-log and workload-log dumps in the same catch blocks under `$NAMESPACE`. After the change, those two must be split. Easy to miss if grepping for `app.kubernetes.io/name=keystone-operator` alone (still matches; just wrong namespace).\n  6. `tests/unit/deploy/production_posture_test.sh` will fail on the branch by design. Do NOT add a blanket carve-out for `deploy/flux-system/releases/`; that would mask future regressions. Either narrow the carve-out to CC-0105 files OR accept the branch-only failure and document it in the PR (it auto-resolves on main).\n\nPATTERNS TO FOLLOW\n  • Feature-ID header comments: every file we touch carries an SPDX header and a `# Feature: CC-XXXX` marker. Append `, CC-0105` to existing markers; do not replace.\n  • DECISION comments: when keeping the kind suspend-patch or the prometheus inline namespace, leave `# DECISION: …` comments naming what was non-obvious.\n  • Shell test style: tests/unit/deploy/production_posture_test.sh and tests/unit/deploy/chaos_mesh_overlay_test.sh are the templates for the new shell tests in this PR.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-05-14T15:13:36.881575"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-05-14T15:13:37.257339"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-05-14T15:25:01.525762"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "50ae5644-a68a-45e1-9551-e2ab09b55fd5",
+      "timestamp": "2026-05-14T15:25:01.525787",
+      "total_duration": 681.4711630344391,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 681.4711630344391,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
