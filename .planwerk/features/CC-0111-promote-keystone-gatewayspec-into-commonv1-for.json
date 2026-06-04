@@ -1,0 +1,631 @@
+{
+  "feature_id": "CC-0111",
+  "title": "Promote keystone GatewaySpec into commonv1 for shared use",
+  "slug": "promote-keystone-gatewayspec-into-commonv1-for",
+  "status": "prepared",
+  "phase": null,
+  "summary": "",
+  "description": "# GitHub Issue #403: refactor(common): promote the keystone GatewaySpec into commonv1 so both operators share one type (Option B follow-up to #402)\n\n## Context\n\nWhen exposing the ControlPlane-projected Keystone through the shared Gateway\n(#402), the c5c3 **api** package could not reuse the keystone operator's\n`GatewaySpec` because the L1 api package intentionally has **no dependency** on\nthe keystone module (the DECISION recorded on `ServiceKeystoneSpec` in\n`operators/c5c3/api/v1alpha1/controlplane_types.go`). #402 therefore landed\n**Option A**: a curated, c5c3-local copy of the gateway shape\n(`GatewaySpec` + `GatewayParentRefSpec`) that the L2 reconciler maps onto\n`keystonev1alpha1.GatewaySpec`.\n\nThat curated copy is a deliberate, documented duplicate. This issue tracks the\n**Option B** consolidation: promote the shared gateway shape into\n`internal/common/types` (`commonv1`) so both operators reference **one** type and\nthe duplicate disappears.\n\n## Why do this\n\n- **Single source of truth.** Today `GatewaySpec`/`GatewayParentRefSpec` exist\n  twice — `operators/keystone/api/v1alpha1/keystone_types.go` and (since #402)\n  `operators/c5c3/api/v1alpha1/controlplane_types.go`. Field drift between the\n  two (a new `path` default, an added annotation knob, validation markers) would\n  be silent until the L2 mapping in `reconcile_keystone.go` breaks.\n- **Mirrors the existing commonv1 discipline.** `DatabaseSpec`, `CacheSpec`,\n  `ImageSpec`, `PolicySpec`, `SecretRefSpec` already live in `commonv1` and are\n  shared by both the keystone and c5c3 CRDs for exactly this reason. `GatewaySpec`\n  is the odd one out.\n- **Scales to more services.** As `ServicesSpec` grows beyond Keystone, every\n  service that wants external exposure would otherwise re-curate the same shape.\n\n## Why it was deferred (and is its own issue)\n\nIt is heavier than the #402 quick-start goal warranted and touches **two**\noperators' CRDs:\n\n- Moving a type **out** of `keystonev1alpha1` is a breaking change for any\n  external importer of `keystonev1alpha1.GatewaySpec` unless a type alias is left\n  behind.\n- It regenerates and re-syncs CRDs for **both** keystone and c5c3 (CRD drift\n  across two operators — the `check-crd-drift` discipline).\n- It needs `generate-common` (deepcopy for the new `commonv1` types) plus SPDX\n  headers on any new file (the `check-spdx-reuse` discipline).\n\n## Plan\n\n### 1. Move the shape into `commonv1`\n- [ ] Add `GatewaySpec` + `GatewayParentRefSpec` to `internal/common/types/types.go`\n      (the canonical shape: `parentRef`, `hostname`, `path`, `annotations` /\n      `name`, `namespace`, `sectionName`), carrying the `+kubebuilder` validation\n      markers (`hostname` / `parentRef.name` MinLength=1).\n- [ ] `make generate-common` to produce the `commonv1` deepcopy methods (SPDX\n      header via the boilerplate).\n\n### 2. Repoint the keystone operator\n- [ ] Replace `keystonev1alpha1.GatewaySpec` / `GatewayParentRefSpec` with the\n      `commonv1` types in `keystone_types.go` (`KeystoneSpec.Gateway` →\n      `*commonv1.GatewaySpec`), the gateway reconciler / HTTPRoute builder, and the\n      webhook validation.\n- [ ] **Backward-compat decision:** leave a type alias\n      `type GatewaySpec = commonv1.GatewaySpec` (and parentRef) in\n      `keystonev1alpha1` to avoid breaking external importers, **or** do a clean\n      move and document the break. Recommend the alias.\n\n### 3. Repoint the c5c3 operator (remove the Option A duplicate)\n- [ ] Delete the curated `GatewaySpec` / `GatewayParentRefSpec` from\n      `operators/c5c3/api/v1alpha1/controlplane_types.go`; change\n      `ServiceKeystoneSpec.Gateway` to `*commonv1.GatewaySpec`.\n- [ ] Simplify the mapping in `reconcile_keystone.go`: with one shared type the\n      reconciler can assign the gateway through (still distinct from\n      `keystone.Spec.Gateway` only if keystone keeps its alias) — collapse the\n      field-by-field copy.\n\n### 4. Regenerate + sync (both operators)\n- [ ] `make generate manifests sync-crds` and verify `make verify-crd-sync` —\n      the c5c3 and keystone CRD `bases/` + helm `crds/` stay in lockstep. The CRD\n      **schema** for the gateway block should be byte-stable; only the Go source of\n      truth moves.\n\n### 5. Docs + tests\n- [ ] Point both CRD references (`docs/reference/c5c3/controlplane-crd.md`,\n      `docs/reference/keystone/keystone-crd.md`) at the shared `commonv1.GatewaySpec`.\n- [ ] Keystone gateway tests + c5c3 projection tests adjust to the shared type;\n      behaviour must be unchanged.\n\n## Acceptance criteria\n- One `GatewaySpec` definition (in `commonv1`); no curated copy in the c5c3 api\n  package; keystone either aliases or uses it directly.\n- `make verify-crd-sync` green for both operators; gateway CRD schema unchanged.\n- All existing keystone + c5c3 unit/envtest tests pass; the #402 external-exposure\n  behaviour is preserved.\n\n## Out of scope\n- Any change to external-exposure *behaviour* — this is a pure type-consolidation\n  refactor. The user-visible gateway/publicEndpoint semantics shipped in #402.\n\n## Relationship\n- Follow-up to #402 (which implemented Option A — the curated local copy). #402's\n  \"Design decision\" section flagged this as the eventual consolidation.\n\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/403",
+  "stories": [
+    {
+      "title": "commonv1 owns the single GatewaySpec definition",
+      "role": "internal/common maintainer",
+      "want": "GatewaySpec and GatewayParentRefSpec to live once in internal/common/types alongside DatabaseSpec/CacheSpec/PolicySpec, with deepcopy generated",
+      "so_that": "the gateway shape follows the same single-source-of-truth discipline as the other shared CRD shapes and cannot drift between operators",
+      "criteria": [
+        "internal/common/types/types.go declares GatewaySpec and GatewayParentRefSpec with operator-neutral godoc",
+        "GatewaySpec.Hostname and GatewayParentRefSpec.Name carry +kubebuilder:validation:MinLength=1",
+        "make generate-common adds DeepCopy/DeepCopyInto for both types to internal/common/types/zz_generated.deepcopy.go",
+        "No new file is created (types added to existing types.go) so the existing SPDX header covers them; if a new file is added it carries SPDX-FileCopyrightText + SPDX-License-Identifier from hack/boilerplate.go.txt",
+        "go build ./... and go vet ./... pass for the internal/common module"
+      ]
+    },
+    {
+      "title": "Keystone operator references the shared type without behaviour change",
+      "role": "keystone operator maintainer",
+      "want": "keystonev1alpha1.GatewaySpec / GatewayParentRefSpec to become type aliases to the commonv1 types so KeystoneSpec.Gateway is *commonv1.GatewaySpec",
+      "so_that": "existing importers (in-repo and external) keep compiling while the duplicate definition is removed",
+      "criteria": [
+        "keystone_types.go defines `type GatewaySpec = commonv1.GatewaySpec` and `type GatewayParentRefSpec = commonv1.GatewayParentRefSpec` (alias, not a new struct)",
+        "The KeystoneSpec.Gateway field godoc (CC-0065 description) is retained verbatim on the field declaration so the CRD `gateway` property description is unchanged",
+        "reconcile_httproute.go, reconcile_networkpolicy.go and keystone_webhook.go compile unchanged (all access keystone.Spec.Gateway.<field>)",
+        "make generate regenerates keystone zz_generated.deepcopy.go: standalone GatewaySpec/GatewayParentRefSpec DeepCopy funcs are removed and KeystoneSpec.DeepCopyInto references types.GatewaySpec",
+        "All existing keystone unit and envtest tests (keystone_webhook_test.go, integration_test.go, reconcile_httproute_test.go, reconcile_networkpolicy_test.go) pass unmodified"
+      ]
+    },
+    {
+      "title": "c5c3 operator drops the Option A curated copy",
+      "role": "c5c3 operator maintainer",
+      "want": "the curated GatewaySpec/GatewayParentRefSpec deleted from controlplane_types.go and ServiceKeystoneSpec.Gateway changed to *commonv1.GatewaySpec, with the L2 mapping collapsed",
+      "so_that": "the documented temporary duplicate disappears and the projection becomes a one-line assignment",
+      "criteria": [
+        "controlplane_types.go no longer declares GatewaySpec or GatewayParentRefSpec; ServiceKeystoneSpec.Gateway is `*commonv1.GatewaySpec`",
+        "The ServiceKeystoneSpec.Gateway field godoc is retained so the ControlPlane CRD `gateway` property description is unchanged",
+        "reconcile_keystone.go replaces the field-by-field copy with a direct assignment (keystone.Spec.Gateway = gw.DeepCopy(); nil clears it)",
+        "The c5c3 L1 api package still imports ONLY commonv1 (no keystone import added); `go mod tidy` does not add operators/keystone to the api package's reachable imports",
+        "make generate regenerates c5c3 zz_generated.deepcopy.go: curated GatewaySpec/GatewayParentRefSpec DeepCopy funcs are removed and ServiceKeystoneSpec.DeepCopyInto references types.GatewaySpec"
+      ]
+    },
+    {
+      "title": "CRD schema stays valid and in sync across both operators",
+      "role": "platform operator applying CRs",
+      "want": "the gateway validation schema (types, minLength, required) to be byte-stable and both operators' bases/ + helm crds/ to stay in lockstep",
+      "so_that": "no Keystone or ControlPlane CR is rejected and clusters do not see schema regressions after the refactor",
+      "criteria": [
+        "The structural gateway schema (minLength:1 on hostname & parentRef.name, required:[hostname,parentRef], required:[name]) is unchanged in both keystone.openstack.c5c3.io_keystones.yaml and c5c3.io_controlplanes.yaml",
+        "make manifests sync-crds regenerates and re-syncs both operators; make verify-crd-sync exits 0",
+        "The only CRD diff in the gateway block is the nested property descriptions (hostname/path/parentRef/annotations) converging to the canonical commonv1 godoc — the validation rules do not change",
+        "Existing keystone gateway e2e fixtures (tests/e2e/keystone/httproute, gateway-quick-start) remain schema-valid"
+      ]
+    },
+    {
+      "title": "Documentation points at the shared commonv1 type",
+      "role": "documentation reader / contributor",
+      "want": "both CRD reference docs to describe GatewaySpec as a shared commonv1 type rather than a curated/per-operator copy",
+      "so_that": "readers find one canonical gateway type description and cross-references resolve correctly",
+      "criteria": [
+        "docs/reference/keystone/keystone-crd.md documents GatewaySpec/GatewayParentRefSpec under the existing \"Shared Types (from internal/common/types)\" section (or marks the existing GatewaySpec section as a shared commonv1 type)",
+        "docs/reference/c5c3/controlplane-crd.md GatewaySpec section is repointed at the shared commonv1.GatewaySpec instead of describing a curated local subset that mirrors keystone",
+        "All intra-doc anchor links (#gatewayspec, #gatewayparentrefspec) still resolve",
+        "Doc edits cite the feature ID CC-0111 where a change rationale is recorded"
+      ]
+    },
+    {
+      "title": "External Go importer is not broken by the move",
+      "role": "downstream consumer importing keystonev1alpha1",
+      "want": "keystonev1alpha1.GatewaySpec and keystonev1alpha1.GatewayParentRefSpec to remain referenceable symbols after the move",
+      "so_that": "code that imported the keystone gateway types continues to compile without edits",
+      "criteria": [
+        "keystonev1alpha1.GatewaySpec and keystonev1alpha1.GatewayParentRefSpec still resolve (as aliases) and are assignable to/from commonv1 values",
+        "A value constructed as keystonev1alpha1.GatewaySpec{...} compiles and is identical-typed to commonv1.GatewaySpec{...}",
+        "No clean-break removal of the keystone symbols occurs unless the alias decision is explicitly reversed and the break documented"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "commonv1 SHALL define GatewaySpec and GatewayParentRefSpec as the single canonical gateway shape, carrying the existing validation markers, with controller-gen deepcopy generated.",
+      "priority": "SHALL",
+      "rationale": "Single source of truth; mirrors the existing commonv1 discipline for DatabaseSpec/CacheSpec/PolicySpec.",
+      "scenarios": [
+        {
+          "name": "Types added with markers",
+          "when": "GatewaySpec (parentRef, hostname, path, annotations) and GatewayParentRefSpec (name, namespace, sectionName) are added to internal/common/types/types.go",
+          "then": "Hostname and ParentRef.Name carry +kubebuilder:validation:MinLength=1 and the package compiles",
+          "and_then": [
+            "godoc is operator-neutral (no Keystone-specific wording)",
+            "field tags match the existing keystone shape exactly (parentRef, hostname, path, annotations / name, namespace, sectionName)"
+          ]
+        },
+        {
+          "name": "Deepcopy generated",
+          "when": "make generate-common runs",
+          "then": "internal/common/types/zz_generated.deepcopy.go gains DeepCopy/DeepCopyInto for GatewaySpec and GatewayParentRefSpec",
+          "and_then": [
+            "the generated file keeps its SPDX header and DO NOT EDIT banner",
+            "the Annotations map is deep-copied (allocated, not aliased)"
+          ]
+        },
+        {
+          "name": "No SPDX regression",
+          "when": "check-spdx-reuse is run after the change",
+          "then": "no new uncovered file is reported",
+          "and_then": [
+            "types are added to the existing types.go so no new header is needed; any new file added instead carries the boilerplate SPDX header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "description": "The keystone operator SHALL reference the commonv1 gateway types via type aliases, preserving all current reconciler/webhook behaviour and external-symbol compatibility.",
+      "priority": "SHALL",
+      "rationale": "Removes the keystone-local definition while keeping importers compiling and behaviour identical (#402 external exposure preserved).",
+      "scenarios": [
+        {
+          "name": "Alias replaces local struct",
+          "when": "the keystone-local GatewaySpec/GatewayParentRefSpec struct definitions are replaced by `type GatewaySpec = commonv1.GatewaySpec` and `type GatewayParentRefSpec = commonv1.GatewayParentRefSpec`",
+          "then": "KeystoneSpec.Gateway resolves to *commonv1.GatewaySpec and the package builds",
+          "and_then": [
+            "the KeystoneSpec.Gateway field godoc (CC-0065) is retained on the field so the CRD property description is unchanged"
+          ]
+        },
+        {
+          "name": "Consumers unchanged",
+          "when": "the keystone module is rebuilt",
+          "then": "reconcile_httproute.go, reconcile_networkpolicy.go, and keystone_webhook.go compile without edits",
+          "and_then": [
+            "existing keystone gateway unit + envtest tests pass unmodified",
+            "keystonev1alpha1.GatewaySpec{...} literals in tests still compile"
+          ]
+        },
+        {
+          "name": "Deepcopy regenerated",
+          "when": "make generate runs for keystone",
+          "then": "standalone GatewaySpec/GatewayParentRefSpec DeepCopy funcs are removed from keystone zz_generated.deepcopy.go and KeystoneSpec.DeepCopyInto allocates types.GatewaySpec",
+          "and_then": [
+            "go vet passes",
+            "the regenerated file is committed"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "description": "The c5c3 operator SHALL delete the Option A curated GatewaySpec/GatewayParentRefSpec, change ServiceKeystoneSpec.Gateway to *commonv1.GatewaySpec, and collapse the L2 projection mapping.",
+      "priority": "SHALL",
+      "rationale": "Removes the documented temporary duplicate; with one shared type the field-by-field copy is unnecessary.",
+      "scenarios": [
+        {
+          "name": "Curated copy removed",
+          "when": "controlplane_types.go is edited",
+          "then": "GatewaySpec and GatewayParentRefSpec are no longer declared in the c5c3 api package and ServiceKeystoneSpec.Gateway is *commonv1.GatewaySpec",
+          "and_then": [
+            "the ServiceKeystoneSpec.Gateway field godoc is retained so the ControlPlane CRD property description is unchanged",
+            "the Option A DECISION comment block is removed or updated to record the CC-0111 consolidation"
+          ]
+        },
+        {
+          "name": "Mapping collapsed",
+          "when": "reconcileKeystone projects a non-nil gateway",
+          "then": "it assigns keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy() (and sets it to nil when the source is nil) instead of copying each field",
+          "and_then": [
+            "keystonePublicEndpoint still derives https://{hostname}/v3 when publicEndpoint is empty and gateway is set",
+            "TestReconcileKeystone_GatewayProjection still asserts the projected keystone gateway fields equal the source"
+          ]
+        },
+        {
+          "name": "L1 dependency invariant preserved",
+          "when": "go mod tidy is run in the c5c3 module after the change",
+          "then": "the c5c3 api (L1) package still imports only commonv1 / apimachinery / controller-runtime — no operators/keystone import is introduced at L1",
+          "and_then": [
+            "the keystone require+replace in c5c3 go.mod remains (used by the L2 controller), but nothing new is added by this refactor"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "description": "The gateway CRD validation schema SHALL remain byte-stable for both operators, and both bases/ + helm crds/ SHALL stay in sync.",
+      "priority": "SHALL",
+      "rationale": "Acceptance criterion: gateway schema unchanged; only the Go source of truth moves. check-crd-drift discipline across two operators.",
+      "scenarios": [
+        {
+          "name": "Validation rules unchanged",
+          "when": "make manifests regenerates both CRDs",
+          "then": "the gateway block keeps minLength:1 on hostname and parentRef.name, required:[hostname,parentRef], and required:[name] under parentRef in BOTH keystone and c5c3 CRDs",
+          "and_then": [
+            "the gateway property types (object/string/map) are unchanged"
+          ]
+        },
+        {
+          "name": "Descriptions converge (expected, non-functional)",
+          "when": "the regenerated CRDs are diffed against the committed versions",
+          "then": "the only gateway-block change is the nested property descriptions (hostname/path/parentRef/annotations) converging to the canonical commonv1 godoc; the top-level `gateway` property description (from the field godoc) is unchanged in each operator",
+          "and_then": [
+            "the diff is reviewed and accepted as a description-only, non-validation change"
+          ]
+        },
+        {
+          "name": "Helm sync green",
+          "when": "make sync-crds then make verify-crd-sync runs",
+          "then": "verify-crd-sync exits 0 for both operators",
+          "and_then": [
+            "the helm crds/ copies match bases/ ignoring the cross-reference comment header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "description": "The shared commonv1 GatewaySpec SHALL have a deepcopy unit test proving independent (non-aliased) copies, mirroring the existing DatabaseTLSSpec test.",
+      "priority": "SHALL",
+      "rationale": "TEST_COVERAGE: new shared type must have accompanying tests; the deepcopy of the Annotations map is the only non-trivial copy behaviour.",
+      "scenarios": [
+        {
+          "name": "Populated value deep-copies independently",
+          "when": "a populated *commonv1.GatewaySpec (with a non-empty Annotations map) is DeepCopy()'d",
+          "then": "the clone is a new pointer, equal by value, and mutating clone.Annotations does not affect the original",
+          "and_then": [
+            "mutating clone.ParentRef does not affect the original"
+          ]
+        },
+        {
+          "name": "Nil deep-copies to nil",
+          "when": "a nil *commonv1.GatewaySpec is DeepCopy()'d",
+          "then": "the result is nil",
+          "and_then": [
+            "a GatewaySpec with nil Annotations deep-copies to a value whose Annotations is nil"
+          ]
+        },
+        {
+          "name": "Field-type assertion",
+          "when": "the c5c3 controlplane_types_test compile-time type assertion runs",
+          "then": "assigning &commonv1.GatewaySpec{} to spec.Services.Keystone.Gateway compiles (proving the field is exactly the shared type, not a local copy)",
+          "and_then": [
+            "the test fails to compile if a local GatewaySpec is reintroduced"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "description": "All existing keystone and c5c3 unit/envtest tests SHALL pass after the refactor and the #402 external-exposure behaviour SHALL be preserved.",
+      "priority": "SHALL",
+      "rationale": "Acceptance criterion: behaviour unchanged; this is a pure type-consolidation refactor.",
+      "scenarios": [
+        {
+          "name": "c5c3 tests repointed and green",
+          "when": "reconcile_keystone_test.go and reconcile_korc_test.go (which use c5c3v1alpha1.GatewaySpec / GatewayParentRefSpec) are repointed to commonv1",
+          "then": "go test ./... passes for the c5c3 module",
+          "and_then": [
+            "TestReconcileKeystone_GatewayProjection, TestReconcileKeystone_GatewayNilStaysInCluster, TestReconcileKeystone_PublicEndpointDerivedFromHostname still pass with identical assertions"
+          ]
+        },
+        {
+          "name": "keystone tests green unmodified",
+          "when": "go test ./... runs for the keystone module",
+          "then": "all gateway webhook/controller/envtest tests pass without source edits",
+          "and_then": [
+            "the HTTPRoute built from spec.gateway is byte-identical to pre-refactor"
+          ]
+        },
+        {
+          "name": "Behaviour preserved end-to-end",
+          "when": "a ControlPlane with services.keystone.gateway set is reconciled (fake client / envtest)",
+          "then": "the projected Keystone CR carries the same gateway fields and the same derived publicEndpoint as before the refactor",
+          "and_then": [
+            "a nil gateway still clears keystone.Spec.Gateway and advertises no public endpoint"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "description": "Both CRD reference docs SHALL point at the shared commonv1.GatewaySpec instead of describing per-operator copies.",
+      "priority": "SHALL",
+      "rationale": "Docs drift discipline; the docs currently describe a keystone-local type and a c5c3 \"curated local subset\".",
+      "scenarios": [
+        {
+          "name": "keystone doc updated",
+          "when": "docs/reference/keystone/keystone-crd.md is edited",
+          "then": "GatewaySpec/GatewayParentRefSpec are presented as shared commonv1 types (placed in or linked from the existing \"Shared Types (from internal/common/types)\" section)",
+          "and_then": [
+            "the existing #gatewayspec / #gatewayparentrefspec anchors still resolve so c5c3 cross-links do not break"
+          ]
+        },
+        {
+          "name": "c5c3 doc updated",
+          "when": "docs/reference/c5c3/controlplane-crd.md is edited",
+          "then": "the GatewaySpec section no longer calls it a curated local subset that mirrors keystone; it links to the shared commonv1.GatewaySpec",
+          "and_then": [
+            "the `gateway` field row in the ServiceKeystoneSpec table links to the shared type"
+          ]
+        },
+        {
+          "name": "Feature ID cited",
+          "when": "a rationale line is added to either doc",
+          "then": "it references CC-0111 (the consolidation follow-up to CC-0110)",
+          "and_then": []
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "description": "The Go workspace dependency lockstep and REUSE/SPDX state SHALL be preserved; the refactor introduces no version drift and no uncovered files.",
+      "priority": "SHALL",
+      "rationale": "check-go-workspace-deps and check-spdx-reuse disciplines; controller-runtime/k8s pins must stay aligned across modules.",
+      "scenarios": [
+        {
+          "name": "No dep drift",
+          "when": "check-go-workspace-deps runs after the change",
+          "then": "controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, the Go directive and toolchain remain identical across internal/common and both operators",
+          "and_then": [
+            "no go.mod require is added or bumped by this refactor"
+          ]
+        },
+        {
+          "name": "SPDX clean",
+          "when": "check-spdx-reuse runs",
+          "then": "every changed/added .go file (including regenerated zz_generated files) carries matching SPDX headers",
+          "and_then": [
+            "generated deepcopy files keep the boilerplate header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "description": "The fixture set SHALL remain valid against the regenerated CRDs (no fixture references a removed field; gateway fixtures still validate).",
+      "priority": "SHOULD",
+      "rationale": "check-fixture-drift discipline; the gateway structural schema is byte-stable so fixtures should remain valid, but this must be confirmed.",
+      "scenarios": [
+        {
+          "name": "keystone gateway fixtures valid",
+          "when": "check-fixture-drift (or kubectl --dry-run against the regenerated CRD) is run on tests/e2e/keystone/httproute and gateway-quick-start fixtures",
+          "then": "every fixture still validates against the regenerated keystone CRD",
+          "and_then": [
+            "no gateway sub-field used in a fixture was removed or renamed"
+          ]
+        },
+        {
+          "name": "No c5c3 controlplane gateway fixture regression",
+          "when": "the c5c3 CRD is regenerated",
+          "then": "any ControlPlane fixture (if present) that sets services.keystone.gateway still validates",
+          "and_then": []
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Add GatewaySpec + GatewayParentRefSpec to internal/common/types/types.go (REQ-001). Copy the canonical shape (parentRef, hostname, path, annotations / name, namespace, sectionName) with operator-neutral godoc and the +kubebuilder:validation:MinLength=1 markers on Hostname and ParentRef.Name. Add to the existing file (no new file) so the SPDX header already covers it.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "1.2",
+      "title": "Run `make generate-common` and verify GatewaySpec/GatewayParentRefSpec DeepCopy funcs land in internal/common/types/zz_generated.deepcopy.go (REQ-001). Add TestGatewaySpec_DeepCopy + nil-Annotations case to internal/common/types/types_test.go mirroring TestDatabaseTLSSpec_DeepCopy.",
+      "level": 1,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-001",
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "2.1",
+      "title": "In operators/keystone/api/v1alpha1/keystone_types.go replace the GatewaySpec/GatewayParentRefSpec struct definitions with `type GatewaySpec = commonv1.GatewaySpec` and `type GatewayParentRefSpec = commonv1.GatewayParentRefSpec` (REQ-002). Keep the KeystoneSpec.Gateway field godoc (CC-0065) verbatim on the field so the CRD property description is unchanged.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "2.2",
+      "title": "Run `make generate` for keystone; confirm keystone zz_generated.deepcopy.go drops the standalone GatewaySpec/GatewayParentRefSpec DeepCopy funcs and KeystoneSpec.DeepCopyInto references types.GatewaySpec (REQ-002). Build the keystone module and run its existing gateway unit/envtest tests unmodified to confirm reconcile_httproute.go, reconcile_networkpolicy.go and keystone_webhook.go are unaffected.",
+      "level": 2,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-002",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.1",
+      "title": "In operators/c5c3/api/v1alpha1/controlplane_types.go delete the curated GatewaySpec/GatewayParentRefSpec definitions and change ServiceKeystoneSpec.Gateway to `*commonv1.GatewaySpec` (REQ-003). Keep the field godoc; replace the Option A DECISION comment with a one-line CC-0111 note recording the consolidation.",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "id": "3.2",
+      "title": "Collapse the L2 mapping in operators/c5c3/internal/controller/reconcile_keystone.go (REQ-003): replace the field-by-field copy with `keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()` (nil clears it). Leave a `# DECISION:` style comment justifying DeepCopy over direct pointer share. keystonePublicEndpoint is unchanged.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.3",
+      "title": "Repoint c5c3 tests to commonv1 (REQ-003, REQ-006): in reconcile_keystone_test.go and reconcile_korc_test.go swap c5c3v1alpha1.GatewaySpec/GatewayParentRefSpec for commonv1 equivalents; in controlplane_types_test.go extend TestControlPlaneSpecReusesCommonTypes with the gateway compile-time type assertion. Update any 'curated' wording in test comments to 'shared'.",
+      "level": 3,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-003",
+        "REQ-005",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.4",
+      "title": "Run `make generate` for c5c3; confirm c5c3 zz_generated.deepcopy.go drops the curated GatewaySpec/GatewayParentRefSpec DeepCopy funcs and ServiceKeystoneSpec.DeepCopyInto references types.GatewaySpec (REQ-003). Build the c5c3 module and run its unit tests.",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003",
+        "REQ-006"
+      ]
+    },
+    {
+      "id": "3.5",
+      "title": "Run `go mod tidy` in the c5c3 module and confirm the L1 api package (operators/c5c3/api/...) still imports only commonv1/apimachinery/controller-runtime — no operators/keystone import introduced at L1 (REQ-003, REQ-008). Confirm no go.mod require/version changes (check-go-workspace-deps stays green).",
+      "level": 3,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-003",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.1",
+      "title": "Run `make manifests sync-crds` then `make verify-crd-sync` for both operators (REQ-004). Review the gateway-block diff in both bases/ + helm crds/: assert the validation schema (minLength:1, required arrays, types) is byte-stable and the only change is nested property descriptions converging to the commonv1 godoc. Commit the regenerated + synced CRDs.",
+      "level": 4,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-004",
+        "REQ-008"
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "Validate fixtures against the regenerated CRDs (REQ-009): run the existing invalid-cr / e2e gateway fixtures through check-fixture-drift (or kubectl apply --dry-run=server with the regenerated keystone CRD) to confirm tests/e2e/keystone/httproute and gateway-quick-start fixtures still validate.",
+      "level": 4,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-009"
+      ]
+    },
+    {
+      "id": "5.1",
+      "title": "Update docs/reference/keystone/keystone-crd.md (REQ-007): present GatewaySpec/GatewayParentRefSpec as shared commonv1 types (fold into or link from the existing 'Shared Types (from internal/common/types)' section), keeping the #gatewayspec / #gatewayparentrefspec anchors intact so c5c3 cross-links resolve. Cite CC-0111.",
+      "level": 5,
+      "estimate_minutes": 20,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "5.2",
+      "title": "Update docs/reference/c5c3/controlplane-crd.md (REQ-007): repoint the GatewaySpec section and the ServiceKeystoneSpec.gateway field row at the shared commonv1.GatewaySpec; remove the 'curated local subset that mirrors keystone field-for-field' framing. Cite CC-0111.",
+      "level": 5,
+      "estimate_minutes": 15,
+      "requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "id": "6.1",
+      "title": "Full verification sweep (REQ-006, REQ-008): run go test ./... for internal/common, keystone, and c5c3 modules; run check-spdx-reuse, check-crd-drift, check-doc-drift, and check-go-workspace-deps. Confirm all green and that the #402 external-exposure behaviour is preserved end-to-end.",
+      "level": 6,
+      "estimate_minutes": 25,
+      "requirements": [
+        "REQ-006",
+        "REQ-007",
+        "REQ-008",
+        "REQ-009"
+      ]
+    }
+  ],
+  "test_specifications": [
+    {
+      "test_file": "internal/common/types/types_test.go",
+      "test_function": "TestGatewaySpec_DeepCopy",
+      "story": "commonv1 owns the single GatewaySpec definition",
+      "expected": "[unit] DeepCopy of a populated *GatewaySpec returns a new, value-equal pointer; mutating clone.Annotations / clone.ParentRef does not affect the original; DeepCopy of a nil *GatewaySpec returns nil. Mirrors TestDatabaseTLSSpec_DeepCopy.",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "internal/common/types/types_test.go",
+      "test_function": "TestGatewaySpec_DeepCopy_NilAnnotations",
+      "story": "commonv1 owns the single GatewaySpec definition",
+      "expected": "[unit] DeepCopy of a GatewaySpec whose Annotations is nil produces a clone whose Annotations is nil (no spurious empty-map allocation).",
+      "requirement_id": "REQ-005"
+    },
+    {
+      "test_file": "operators/keystone/api/v1alpha1/keystone_webhook_test.go",
+      "test_function": "TestValidate_GatewayValid (existing) + TestValidate_GatewayEmptyHostname / TestValidate_GatewayEmptyParentRefName (existing)",
+      "story": "Keystone operator references the shared type without behaviour change",
+      "expected": "[unit] These pre-existing tests, which construct GatewaySpec{}/GatewayParentRefSpec{} literals in-package, MUST continue to compile and pass unmodified — proving the type alias is transparent to in-package literals.",
+      "requirement_id": "REQ-002"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/reconcile_httproute_test.go",
+      "test_function": "existing HTTPRoute build/lifecycle tests",
+      "story": "Keystone operator references the shared type without behaviour change",
+      "expected": "[unit/integration] The HTTPRoute built from spec.gateway (parentRef, hostname, path default \"/\", annotations passthrough) is unchanged after the alias swap; all existing assertions pass without edits.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/keystone/internal/controller/integration_test.go",
+      "test_function": "existing envtest gateway scenarios",
+      "story": "CRD schema stays valid and in sync across both operators",
+      "expected": "[integration] envtest applies a Keystone CR with spec.gateway against the regenerated CRD and the HTTPRoute reconcile + status.endpoint derivation behave identically to pre-refactor.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestControlPlaneSpecReusesCommonTypes (extend)",
+      "story": "c5c3 operator drops the Option A curated copy",
+      "expected": "[unit] Add a compile-time assertion `spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{ParentRef: commonv1.GatewayParentRefSpec{Name: \"gw\"}, Hostname: \"h\"}` — fails to compile if a local GatewaySpec is reintroduced.",
+      "requirement_id": "REQ-003"
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_GatewayProjection (repoint)",
+      "story": "c5c3 operator drops the Option A curated copy",
+      "expected": "[unit] Construct the source gateway as commonv1.GatewaySpec/GatewayParentRefSpec; assert the projected Keystone CR's gateway fields (parentRef name/namespace/sectionName, hostname, path, annotations) and bootstrap.publicEndpoint match exactly — behaviour unchanged.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_GatewayNilStaysInCluster (repoint)",
+      "story": "c5c3 operator drops the Option A curated copy",
+      "expected": "[unit] With a nil gateway, the projected Keystone CR has Spec.Gateway == nil and an empty bootstrap.publicEndpoint — the collapsed mapping still clears the field.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_PublicEndpointDerivedFromHostname (repoint)",
+      "story": "c5c3 operator drops the Option A curated copy",
+      "expected": "[unit] With gateway set and publicEndpoint empty, the projected keystone bootstrap.publicEndpoint is derived as https://{hostname}/v3 — derivation logic unaffected by the type swap.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "K-ORC catalog gateway test (repoint, ~line 814)",
+      "story": "c5c3 operator drops the Option A curated copy",
+      "expected": "[unit] Repoint c5c3v1alpha1.GatewaySpec/GatewayParentRefSpec to commonv1; assert the K-ORC identity catalog URL still uses the external publicEndpoint when Keystone is exposed via a Gateway.",
+      "requirement_id": "REQ-006"
+    },
+    {
+      "test_file": "Makefile target: make verify-crd-sync",
+      "test_function": "verify-crd-sync (CI gate)",
+      "story": "CRD schema stays valid and in sync across both operators",
+      "expected": "[integration] After make generate manifests sync-crds, verify-crd-sync exits 0 for keystone and c5c3; the gateway block validation schema (minLength/required/types) is unchanged and only nested descriptions differ.",
+      "requirement_id": "REQ-004"
+    },
+    {
+      "test_file": "tests/e2e/keystone/httproute + gateway-quick-start fixtures",
+      "test_function": "check-fixture-drift / kubectl apply --dry-run=server against regenerated CRD",
+      "story": "CRD schema stays valid and in sync across both operators",
+      "expected": "[e2e] Existing keystone gateway CR fixtures validate against the regenerated keystone CRD (structural schema byte-stable), confirming no fixture drift.",
+      "requirement_id": "REQ-009"
+    }
+  ],
+  "affected_files": [],
+  "similar_patterns": [],
+  "review_criteria": [
+    "BLOCKER: Exactly one GatewaySpec/GatewayParentRefSpec definition exists — in commonv1; the c5c3 api package has no local copy and keystone only aliases (verified by grep for `type GatewaySpec struct` returning a single hit under internal/common/types).",
+    "BLOCKER: make verify-crd-sync exits 0 for BOTH operators; the gateway-block validation schema (minLength:1 on hostname & parentRef.name, required:[hostname,parentRef], required:[name]) is unchanged in both CRDs — only nested descriptions converge.",
+    "BLOCKER: All pre-existing keystone gateway tests pass UNMODIFIED (alias transparency) and the repointed c5c3 gateway tests pass with identical assertions (behaviour preserved).",
+    "CRITICAL: The c5c3 L1 api package still imports only commonv1/apimachinery/controller-runtime after `go mod tidy` — the L1-no-keystone-dependency invariant from CC-0110 is intact.",
+    "CRITICAL: No go.mod require/version changes; check-go-workspace-deps confirms controller-runtime/k8s pins stay aligned across all three modules.",
+    "CRITICAL: commonv1.GatewaySpec has a deepcopy unit test proving the Annotations map and ParentRef are copied independently and nil → nil.",
+    "CRITICAL: check-spdx-reuse is clean — no new uncovered file (types added to existing types.go); regenerated zz_generated files keep their SPDX headers.",
+    "MINOR: Both CRD reference docs describe GatewaySpec as a shared commonv1 type with working anchors and cite CC-0111; no stale 'curated local subset' wording remains.",
+    "MINOR: The reconcile_keystone.go mapping is reduced to a single DeepCopy assignment with a DECISION comment, and 'curated' wording in c5c3 comments/tests is updated to 'shared'.",
+    "MINOR: golangci-lint and gofumpt (repo-pinned versions) are clean on all changed Go files."
+  ],
+  "implementation_notes": "PURE TYPE-CONSOLIDATION REFACTOR (CC-0111, GitHub #403) — Option B follow-up to CC-0110/#402. No user-visible behaviour change.\n\nARCHITECTURE / DATA FLOW (3 modules, ASCII):\n\n  internal/common/types (commonv1)  <-- single source of truth\n        ^                 ^\n        | alias           | *commonv1.GatewaySpec (field)\n  keystone/api/v1alpha1   c5c3/api/v1alpha1\n  GatewaySpec=commonv1.*  ServiceKeystoneSpec.Gateway *commonv1.GatewaySpec\n        ^                       |\n        | *commonv1.GatewaySpec | DeepCopy()\n  KeystoneSpec.Gateway  <-------+  (L2 reconcile_keystone.go projects cp.gateway -> keystone.gateway)\n\nData flow at reconcile: ControlPlane.Spec.Services.Keystone.Gateway (*commonv1.GatewaySpec) -> reconcileKeystone DeepCopy -> Keystone.Spec.Gateway (*commonv1.GatewaySpec, via keystone alias) -> keystone-operator buildKeystoneHTTPRoute -> HTTPRoute. With one shared type the field-by-field copy collapses to one DeepCopy assignment.\n\nKEY DECISION 1 (alias for keystone, per #403 recommendation): use `type GatewaySpec = commonv1.GatewaySpec` (and parentRef). An alias is a transparent compile-time identity — every in-package literal (keystone_webhook_test.go uses GatewaySpec{}), every qualified reference (keystonev1alpha1.GatewaySpec in keystone controller tests and historically in c5c3), and every field access (keystone.Spec.Gateway.Hostname in reconcile_httproute.go / reconcile_networkpolicy.go / keystone_webhook.go) keeps compiling with ZERO edits. This is why keystone needs no test or reconciler changes. The alias also preserves backward-compat for any external importer.\n\nKEY DECISION 2 (clean delete for c5c3): the c5c3 curated copy was always a documented temporary duplicate (Option A). Delete it outright; the only in-repo consumers are c5c3's own reconciler + tests, which we update to commonv1. Do NOT add a keystone import to the c5c3 L1 api package — that invariant (CC-0110 plan decision #3) is the whole reason the curated copy existed.\n\nKEY DECISION 3 (CRD descriptions WILL change, schema will NOT): controller-gen reads +kubebuilder markers from imported packages (proven: commonv1.DatabaseTLSSpec.Mode enum already renders into the keystone CRD), so the MinLength markers render identically once moved. BUT the nested gateway property DESCRIPTIONS (hostname/path/parentRef/annotations) currently differ between keystone and c5c3 godocs; after both reference commonv1 they CONVERGE to the single canonical commonv1 godoc. So expect a description-only diff in BOTH CRD bases + helm crds/. The top-level `gateway` property description comes from the FIELD godoc (KeystoneSpec.Gateway / ServiceKeystoneSpec.Gateway), which stays put — keep those field godocs. The acceptance criterion 'gateway CRD schema unchanged' means the VALIDATION schema (types/minLength/required), which is byte-stable; descriptions are non-functional. Write the canonical commonv1 godoc operator-neutrally (no 'Keystone API' / 'projected Keystone' wording) so it reads correctly in both CRDs.\n\nCANONICAL commonv1 GODOC (suggested, operator-neutral): GatewaySpec — 'configures the Gateway API HTTPRoute used to expose a service externally. The operator plays the application-developer role: it manages only the HTTPRoute; the referenced Gateway (and GatewayClass) are platform-team infrastructure provisioned outside the operator.' Fields: ParentRef ('identifies the Gateway the HTTPRoute attaches to'), Hostname ('externally reachable host (SNI / Host header) matched by the HTTPRoute; required', MinLength=1), Path ('URL path prefix matched by the HTTPRoute; the reconciler defaults it to \"/\" when empty'), Annotations ('passed through to the HTTPRoute metadata verbatim for implementation-specific config (rate limits, timeouts, CORS)'). GatewayParentRefSpec: Name (required, MinLength=1), Namespace (optional; empty = the consuming CR's namespace; cross-namespace needs a ReferenceGrant), SectionName (optional listener target).\n\nGENERATION ORDER (Makefile, OPERATORS='keystone c5c3'): make generate-common (commonv1 deepcopy) -> make generate (both operators' deepcopy) -> make manifests (both CRDs + webhook) -> make sync-crds (copy bases/ -> helm crds/ with header) -> make verify-crd-sync (diff ignoring ^#). Run from repo root.\n\nPITFALLS: (1) Don't create a new file in commonv1 for these types unless you add the SPDX boilerplate header — adding to types.go is simpler and header-free. (2) After the keystone alias, DON'T hand-edit zz_generated.deepcopy.go — let make generate remove the now-duplicate funcs. (3) Don't share the Annotations map by pointer-assigning cp.gateway directly without DeepCopy in the mutate closure — DeepCopy keeps the child object's map independent of the parent CR. (4) Remember c5c3 has THREE CRDs in bases/ (controlplanes, credentialrotations, secretaggregates) — only controlplanes changes; verify-crd-sync covers all. (5) CI already runs verify-crd-sync / spdx / drift checks — no new GitHub Actions workflow is needed (no new test tier is introduced); do not add a CI task.\n\nTEST TIERS PRESENT: unit (_test.go alongside packages, incl. commonv1 types_test.go), integration (envtest, keystone integration_test.go), e2e (Chainsaw under tests/e2e/keystone). This refactor adds one unit test (commonv1 deepcopy) + one compile-time assertion (c5c3), repoints c5c3 unit tests, and relies on the unchanged keystone unit/integration + e2e fixtures to prove behaviour is preserved.",
+  "status_history": {
+    "draft": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-04T20:56:52.388244"
+    },
+    "preparing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-04T20:56:52.699561"
+    },
+    "prepared": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-04T21:05:45.385637"
+    }
+  },
+  "execution_history": [
+    {
+      "run_id": "f0f4ad14-a505-4d79-b084-df06d11dd526",
+      "timestamp": "2026-06-04T21:05:45.385663",
+      "total_duration": 530.3522710800171,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "prepare",
+          "duration": 530.3522710800171,
+          "type": "prepare",
+          "status": "done"
+        }
+      ]
+    }
+  ]
+}
