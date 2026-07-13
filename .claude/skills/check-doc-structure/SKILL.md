@@ -31,6 +31,7 @@ classes of drift appear everywhere:
 | Navigation | VitePress sidebar, index pages, cross-links from sibling docs | `docs/.vitepress/` and the relevant section index |
 | Links and anchors | relative links, fragment anchors, code-block references | the linked page and its actual heading text |
 | Coverage | orphan pages, duplicate topics, stale renamed paths | the directory tree under `docs/` and `architecture/` |
+| Tutorial-family naming | when several pages walk through the same workflow at different depth/audience (e.g. a base quick start plus deeper variants), names signal the relationship and scope instead of ambiguous modifiers like "extended"; cross-references point at the specific source section instead of restating it | the full set of sibling walkthrough pages, read together, not each in isolation |
 
 A structural finding is any page that cannot be discovered, rendered,
 or read in the expected order because its scaffolding drifted.
@@ -82,26 +83,48 @@ Resolve every local link and fragment anchor that the page introduces or
 updates. If a link target moved, update the source and the destination
 path together.
 
-### 5. Report
+### 5. Check tutorial/guide families as a set
 
-Produce a concise summary grouped by severity:
+When two or more pages cover the same workflow at different depth or for
+a different audience (a quick start plus a deeper variant, a base guide
+plus a role-specific one), read them together, not just individually:
+
+- do the names tell a reader which one to open first, and what the
+  others add — a bare modifier like "extended" doesn't say what it
+  extends or why
+- does the deeper page belong in this section at all, or does its real
+  audience (e.g. developers) mean it should live and be named elsewhere
+- when one page mentions a topic the sibling covers in depth, does it
+  link to the sibling's specific section instead of re-explaining or
+  silently assuming the reader already read it
+
+### 6. Report
+
+Produce findings as a flat list, most severe first, one line each:
+
+`[SEVERITY] STRUCT-<n> — <source page>:<line> [+ nav/index page] —
+<problem> — Fix: <one-line resolution, or "needs judgment" if it
+involves a rename/move/reorg a human should confirm>`
+
+Group by severity:
 
 - **HIGH** — a page cannot be found through the documented nav; a link
   target is missing; the page skeleton is broken enough that the doc
   family no longer renders as intended.
 - **MEDIUM** — a required section is missing or out of order; an index or
-  sidebar entry is stale; a renamed page still has old inbound links.
+  sidebar entry is stale; a renamed page still has old inbound links; a
+  tutorial family's naming or scope actively misleads about what each
+  page covers.
 - **LOW** — a cosmetic heading-level mismatch, duplicate wording, or a
   stale anchor that still resolves after redirects.
 
-For each finding give one line with a file reference for both the source
-page and the nav/index page when applicable. End with a per-doc-family
-verdict.
+End with a per-doc-family verdict.
 
 ## Notes
 
-- This skill is read-only; apply fixes in a separate, explicitly scoped
-  task.
+- This skill is read-only; hand findings to [[fix-docs]] to apply them.
+  Renames and reorganizations from step 5 are judgment calls — flag them
+  for confirmation rather than treating them as mechanical fixes.
 - Pair this with [[check-doc-expressions]] for prose quality and with
   [[check-doc-consistency]] for cross-document truth alignment.
 - If a generated doc or a site template is involved, verify the generator
