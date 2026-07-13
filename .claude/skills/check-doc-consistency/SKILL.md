@@ -33,6 +33,8 @@ style.
 | Repeated examples | duplicated command snippets and YAML blocks do not drift | the canonical workflow or config |
 | Cross-page claims | overview, guide, and reference pages tell the same story | the underlying code or process |
 | Code-grounded statements | docs that describe behavior match the implementation | the relevant code, config, or generated artifact |
+| Environment/tooling claims | stated CLI/tool version requirements (or the absence of one) match what scripts actually enforce or require | `Makefile`, `hack/`, `scripts/`, CI workflow tool-version pins |
+| Terms defined once, used elsewhere | a term, daemon, or API named on one page is only meaningfully explained on a *different* page, with no link between them | the page the term actually appears on, checked against its own content |
 
 A consistency finding is any place where two docs, or a doc and the code,
 make different claims about the same thing.
@@ -79,27 +81,42 @@ Look for:
 - copied examples that kept old values
 - pages that still describe removed behavior
 - claims about code paths that no longer exist
+- a tool/version requirement stated (or silently assumed) that doesn't
+  match what the scripts the reader is about to run actually need
+- a term or reference a page uses that is only explained on a sibling
+  page — the writer knew the definition existed somewhere, but the
+  reader on this page doesn't have it
 
 ### 4. Report
 
-Produce a concise summary grouped by severity:
+Produce findings as a flat list, most severe first, one line each:
+
+`[SEVERITY] CONS-<n> — <file A>:<line> vs <file B or code path>:<line> —
+<the mismatch> — Fix: <one-line resolution, or "needs research" if the
+correct value isn't established yet>`
+
+Group by severity:
 
 - **HIGH** — a doc contradicts the implementation or a sibling doc on a
   load-bearing fact such as a version, default, required step, or
   supported behavior.
-- **MEDIUM** — terminology drift, stale copied examples, or a doc that
-  partially matches reality but omits a conflicting detail.
+- **MEDIUM** — terminology drift, stale copied examples, a doc that
+  partially matches reality but omits a conflicting detail, or a tool
+  requirement that's wrong rather than merely unstated.
 - **LOW** — minor wording differences, old but harmless examples, or
   duplicated phrasing that could mislead later edits.
 
-For each finding give one line with references to both sides of the
-mismatch. End with a verdict for the doc family or topic.
+End with a verdict for the doc family or topic.
 
 ## Notes
 
-- This skill is read-only; use a separate change to fix the mismatch.
+- This skill is read-only; hand findings to [[fix-docs]] to apply them.
 - Pair this with [[check-doc-structure]] for page-level navigation and
   with [[check-doc-expressions]] for readability.
 - If the disagreement is with code, config, or generated output, cite the
   code-side source of truth directly rather than treating the doc as the
   canonical side.
+- If the correct value isn't derivable from anything in the repo (e.g.
+  "why is this the default" has no comment or commit explaining it),
+  report it as **needs research** rather than guessing — that is itself
+  a finding worth surfacing.

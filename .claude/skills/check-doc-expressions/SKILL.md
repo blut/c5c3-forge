@@ -28,10 +28,14 @@ prose is muddy or inconsistent.
 | Area | What to check | Source of truth |
 |---|---|---|
 | Sentence clarity | short, direct sentences; one idea per sentence; no dangling references | the intended reader outcome |
-| Voice and tone | active voice, concrete verbs, minimal hedging | the doc family style used elsewhere in the repo |
+| Voice and tone | active voice, concrete verbs, minimal hedging; no marketing or aspirational phrasing ("the shortest path to…", "seamlessly") in operational docs | the doc family style used elsewhere in the repo |
 | Terminology | one term per concept, no accidental synonyms | the repo glossary and established usage |
 | Command examples | commands are complete, ordered, and copyable | the real workflow the docs describe |
 | Explanatory text | definitions appear before specialized terms are used | the implementation or process being documented |
+| Unexplained references | named tools, daemons, helper processes, or APIs (e.g. a background service invoked indirectly, an internal API) are explained or linked on first use **on the page they appear on** — a definition living only in a different page does not count | the reader landing on this specific page, not the whole corpus |
+| Prerequisite accuracy | stated tool/version requirements match what the workflow actually needs (minimum versions, why a tool is required, what it's required *for*) | the scripts/Makefile/CI steps the doc walks the reader through |
+| Operational realism | the page covers what to do when a step fails, times out, or needs a retry — not only the happy path; environment assumptions (network, resources) that can make a step fail are stated as prerequisites | known failure reports and support history for that workflow |
+| Depth parity | every step/section of one walkthrough gets a comparable level of explanation — no step is a bare command while its siblings get paragraphs of context | the other steps on the same page |
 | Readability | long paragraphs, repetition, and filler are removed | the page's purpose and audience |
 
 A writing finding is any place where the prose forces the reader to infer
@@ -63,9 +67,13 @@ Check whether each paragraph does the following:
 
 - states the point up front
 - uses the same term for the same concept
-- avoids unexplained acronyms or local shorthand
+- avoids unexplained acronyms, jargon, or named tools/daemons/APIs that
+  this page never defines (checking the page itself, not whether some
+  other page defines it)
 - makes examples match the surrounding text
 - keeps warnings and exceptions easy to spot
+- gives each step of a multi-step walkthrough comparable depth — flag a
+  step that is a bare command next to siblings with full explanations
 
 ### 3. Inspect code-adjacent text
 
@@ -74,26 +82,40 @@ For commands, YAML, shell snippets, and API examples:
 - ensure the example is complete enough to run or adapt
 - check that flags, paths, and release names are not stale
 - verify the prose around the example explains what changes and why
+- for any stated tool/version prerequisite, check it against what the
+  workflow actually requires (e.g. a command uses a flag or operator
+  that only exists from some minimum version) — a requirement that is
+  present but wrong is worse than one that is simply missing
+- check whether the page tells the reader what to do if the step fails,
+  times out, or needs a retry, and whether failure-prone environment
+  assumptions (network access, resource limits) are stated up front as
+  prerequisites rather than discovered by trial and error
 
 ### 4. Report
 
-Produce a concise summary grouped by severity:
+Produce findings as a flat list, most severe first, one line each:
+
+`[SEVERITY] EXPR-<n> — <file>:<line> — <problem, quoting the offending
+text> — Fix: <one-line suggested rewording, or "needs judgment" if the
+right wording depends on a decision the audit can't make>`
+
+Group by severity:
 
 - **HIGH** — text says the opposite of what the intended behavior is;
-  an example is misleading enough to cause a bad operation.
-- **MEDIUM** — ambiguous wording, unexplained jargon, repeated terms for
-  one concept, or prose that obscures the actual workflow.
-- **LOW** — awkward phrasing, overly long sentences, or style drift that
-  does not change the meaning.
+  an example is misleading enough to cause a bad operation; a stated
+  prerequisite is wrong (not just unclear) and follows it fails.
+- **MEDIUM** — ambiguous wording, unexplained jargon/reference, repeated
+  terms for one concept, missing failure/retry guidance, or prose that
+  obscures the actual workflow.
+- **LOW** — awkward phrasing, overly long sentences, depth-parity
+  drift, or style drift that does not change the meaning.
 
-For each finding give one line with the offending paragraph or sentence
-and, when relevant, the matching clearer wording. End with a short
-verdict for the page or doc set.
+End with a short verdict for the page or doc set.
 
 ## Notes
 
 - This skill is read-only; do not rewrite the page until the wording
-  issue has been localized.
+  issue has been localized. Hand findings to [[fix-docs]] to apply them.
 - Pair this with [[check-doc-structure]] so the page is both readable
   and well organized, and with [[check-doc-consistency]] so the prose
   matches the rest of the docs corpus.
