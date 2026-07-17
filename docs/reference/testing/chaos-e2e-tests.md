@@ -15,12 +15,18 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 9 chaos test suites validate operator behavior during and after fault injection.
+The 13 chaos test suites validate operator behavior during and after fault injection.
 Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability guarantee
 scenarios. Phase 3 adds an all-pod operator kill with leader re-election
-verification. Phase 4 adds network chaos scenarios (partition and latency).
-Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
+verification. Phase 4 adds network chaos scenarios (partition and latency). Phase 5
+adds the Horizon dashboard's own operator-resilience and cache-dependency suites,
+mirroring Keystone's Phase 1/Phase 2 patterns. Phase 6 adds federation-specific
+chaos against a Keystone attached to an identity backend: a sidecar container-kill
+and a bounded IdP outage.
+Each Keystone suite deploys a Keystone CR; each Horizon suite deploys a Horizon CR
+(against an already-Ready Keystone, since the dashboard's projection gates on it).
+Every suite asserts a healthy baseline, injects a
 [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos` fault, asserts the expected degradation
 (or stability), removes the fault, and asserts full recovery. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion lifecycle.
@@ -76,6 +82,27 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 │  │ (NetworkChaos)       │  │ (no-regression)      │                          │
 │  └──────────────────────┘  └──────────────────────┘                          │
 │                                                                              │
+│  Phase 5: Horizon Dashboard                                                  │
+│  ┌──────────────────────┐  ┌──────────────────────┐                          │
+│  │ horizon-memcached-   │  │ horizon-operator-    │                          │
+│  │ pod-kill             │  │ pod-kill             │                          │
+│  │ (horizon-chaos-mc)   │  │ (horizon-chaos-op)   │                          │
+│  │                      │  │                      │                          │
+│  │ Pattern: no-         │  │ Pattern: operator    │                          │
+│  │ regression           │  │ self-recovery        │                          │
+│  │ (zero pod restarts)  │  │ (no-regression)      │                          │
+│  └──────────────────────┘  └──────────────────────┘                          │
+│                                                                              │
+│  Phase 6: Identity Federation                                                │
+│  ┌──────────────────────┐                                                    │
+│  │ keystone-federation  │                                                    │
+│  │ (keystone-chaos-fed) │                                                    │
+│  │                      │                                                    │
+│  │ Pattern: container-  │                                                    │
+│  │ kill + IdP outage    │                                                    │
+│  │ (fail-closed)        │                                                    │
+│  └──────────────────────┘                                                    │
+│                                                                              │
 │  All tests run in: namespace openstack                                       │
 │  Fault injection: Chaos Mesh PodChaos and NetworkChaos CRDs                  │
 │  Infrastructure: MariaDB, Memcached, ESO, OpenBao, Chaos Mesh (pre-deployed) │
@@ -84,15 +111,20 @@ Each suite deploys a Keystone CR, asserts a healthy baseline, injects a
 
 ## Prerequisites
 
-All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed and
-healthy.
+All 13 test suites require the infrastructure stack and Chaos Mesh to be deployed and
+healthy. `keystone-federation` additionally requires a Keystone attached to an identity
+backend (the in-suite Keycloak fixture) — see the
+[Identity Backend CRD reference](../keystone/identity-backend-crd.md) for the feature
+this suite exercises. The two Horizon suites additionally require the Horizon operator deployed and
+a Ready Keystone instance in the `openstack` namespace (the Horizon CR's projection
+gates on `KeystoneReady`, mirroring the ControlPlane's own `reconcileHorizon` gate).
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
 Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-infra`
 flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
 will fail its preflight check (`chaos-mesh is not installed`). See the
-[Enabling Chaos Mesh tip in Quick Start (Extended)](../../quick-start-extended.md#step-3-deploy-the-infrastructure-stack)
+[Enabling Chaos Mesh tip in Quick Start (Extended)](../../quick-start-extended.md#step-3--deploy-the-infrastructure-stack)
 for the rationale.
 :::
 
@@ -184,6 +216,12 @@ assertion windows.
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
 | [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone-chaos-stuck` | Deletion with a downed dependency operator | Keystone CR removed, `FinalizingDatabase`/`DatabaseFinalized` emitted, MariaDB CRs Terminating → removed after recovery |
 | [keystone-federation](#keystone-federation) | — | `keystone-chaos-fed` | Federation sidecar container-kill + IdP outage (fail-closed) | Sidecar `restartCount` gated recovery, `Ready=True` restored, federated auth recovers; during IdP outage federated auth non-2xx while password auth stays 201 |
+| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon-chaos-mc` | No-regression | `Ready=True` maintained, zero dashboard pod restarts |
+| [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon-chaos-op` | Operator self-recovery (no-regression) | At least one operator pod replaced, operator `readyReplicas` recovers, subsequent spec change reconciled |
+
+Neither `keystone-federation` nor the two Horizon suites carry an `SC-CHAOS-*`
+scenario ID — they were added alongside their respective features without
+extending that numbering scheme.
 
 ---
 
@@ -664,6 +702,66 @@ script (not a fixture apply) so the probe bearer token is provably fetched
 before the IdP disappears; the chaos carries a bounded `duration` so the
 fixture heals itself even if the test is interrupted before the explicit
 delete.
+
+---
+
+### horizon-memcached-pod-kill
+
+**File:** `tests/e2e-chaos/horizon-memcached-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** Validates that the Horizon operator maintains `Ready=True` when a
+Memcached pod is killed, and — unlike the Keystone Memcached suite, which only
+checks conditions — that no dashboard pod restarts. Horizon uses signed-cookie
+sessions, so Memcached only backs the Django cache: losing it degrades cache
+hit-rate but neither logs users out nor flips any condition. There is no
+dedicated cache-health probe, so "no restart" is the observable contract, not a
+degraded condition.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Horizon CR | `apply` | Applies `00-horizon-cr.yaml` — Horizon CR `horizon-chaos-mc` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-memcached-horizon` targeting `app.kubernetes.io/name: memcached` |
+| 4 | Verify chaos effect and recovery | `script` (150s) | Reads desired replica count from the `openstack-memcached` Deployment, polls `readyReplicas` to confirm it drops below desired (chaos took effect) then returns to desired (recovered) |
+| 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached-horizon` |
+| 6 | Assert Ready held and zero restarts | `assert` (5m) + `script` | Ready=True with reason AllReady; every dashboard pod's `restartCount` is 0 across the Memcached outage |
+
+**Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`
+
+**Catch blocks:** Steps 2, 4, and 6 call `../diagnostics.sh` with
+`--dep-label=app.kubernetes.io/name=memcached`.
+
+---
+
+### horizon-operator-pod-kill
+
+**File:** `tests/e2e-chaos/horizon-operator-pod-kill/chainsaw-test.yaml`
+
+**Purpose:** Validates the deployed Horizon workload keeps serving while the
+Horizon operator is down (operational-independence contract), and that the
+operator resumes reconciliation after the kill — mirrors `operator-pod-crash`.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Horizon CR | `apply` | Applies `00-horizon-cr.yaml` — Horizon CR `horizon-chaos-op` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady |
+| 3 | Inject chaos and verify a pod was replaced | `script` (270s) | Snapshots all pre-chaos `horizon-operator` pod UIDs, applies `01-podchaos.yaml` (`mode: one` against 2 replicas), polls until at least one pre-chaos UID is gone, then polls until `readyReplicas` returns to the Deployment's desired replica count |
+| 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-horizon-operator` |
+| 5 | Assert the recovered operator reconciles a spec change | `patch` + `assert` (5m) | Patches `02-patch-scale.yaml` (replicas: 2); asserts the Deployment scales to 2 available/updated replicas and the Horizon CR reports `Ready=True` with reason `AllReady` |
+
+**Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`, `02-patch-scale.yaml`
+
+**Catch blocks:** Steps 3 and 5 call `../diagnostics.sh` with
+`--dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system`.
+
+**Design note:** Snapshotting only `.items[0]` would be racy — the operator
+runs 2 replicas and `PodChaos mode: one` picks its victim at random, so a
+single recorded pod survives the kill in roughly half the runs. Snapshotting
+every pre-chaos UID and checking that at least one disappears is race-free.
 
 ---
 

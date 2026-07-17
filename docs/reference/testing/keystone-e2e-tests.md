@@ -124,7 +124,7 @@ Deployment rollout, bootstrap Job).
 | key-repository-mode | `keystone-keymode` | Fernet/credential key volumes are not world-readable (no `key_repository is world readable` startup warning) |
 | logging | `keystone-logging` | `spec.logging` propagation to oslo.log: defaults, level/format overrides, per-logger levels |
 | metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
-| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
 | resources | `keystone-resources` | `spec.deployment.resources` webhook defaulting and propagation to the Deployment |
@@ -155,10 +155,10 @@ accessible.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-basic` in managed mode |
 | 2 | Assert all sub-conditions and Ready | `assert` (5m) | Verifies SecretsReady=True (SecretsAvailable), DatabaseReady=True (DatabaseSynced), FernetKeysReady=True (FernetKeysAvailable), DeploymentReady=True, BootstrapReady=True (BootstrapComplete), Ready=True (AllReady). Condition order follows the `subConditionTypes` display order. |
-| 3 | Assert Deployment and Service | `assert` (5m) | Deployment `keystone-basic-api` has `availableReplicas > 0`; Service `keystone-basic-api` has port 5000 |
+| 3 | Assert Deployment and Service | `assert` (5m) | Deployment `keystone-basic` has `availableReplicas > 0`; Service `keystone-basic` has port 5000 |
 | 4 | Assert Fernet resources | `assert` (5m) | CronJob `keystone-basic-fernet-rotate`, Secret `keystone-basic-fernet-keys`, ServiceAccount/Role/RoleBinding `keystone-basic-fernet-rotate`, PushSecret `keystone-basic-fernet-keys-backup` all exist |
 | 5 | Assert ConfigMap exists | `script` | `kubectl get cm -n openstack -o name \| grep keystone-basic-config-` — verifies a ConfigMap with content-hash suffix exists |
-| 6 | Assert API accessibility | `script` | `curl -sf http://keystone-basic-api.openstack.svc:5000/v3` — verifies the Keystone API responds |
+| 6 | Assert API accessibility | `script` | `curl -sf http://keystone-basic.openstack.svc:5000/v3` — verifies the Keystone API responds |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -232,7 +232,7 @@ underlying Deployment. Tests both scale-up (3→5) and scale-down (5→2).
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with replicas: 3 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-scale` with replicas: 3 |
-| 2 | Assert Ready and initial replica count | `assert` (5m) | Ready=True, Deployment `keystone-scale-api` has replicas: 3 and availableReplicas >= 3 |
+| 2 | Assert Ready and initial replica count | `assert` (5m) | Ready=True, Deployment `keystone-scale` has replicas: 3 and availableReplicas >= 3 |
 | 3 | Scale up to 5 replicas | `patch` | Applies `01-patch-scale-up.yaml` — patches replicas to 5 |
 | 4 | Assert scale-up | `assert` (5m) | Deployment has replicas: 5 and availableReplicas >= 5 |
 | 5 | Scale down to 2 replicas | `patch` | Applies `02-patch-scale-down.yaml` — patches replicas to 2 |
@@ -257,7 +257,7 @@ CR, then error-asserts that all owned resources return NotFound.
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-cleanup` |
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Delete the Keystone CR | `delete` | Deletes Keystone CR `keystone-cleanup` from namespace `openstack` |
-| 4 | Assert all owned resources deleted | `error` | 12 error assertions verifying NotFound for: Deployment `keystone-cleanup-api`, Service `keystone-cleanup-api`, CronJob `keystone-cleanup-fernet-rotate`, Secret `keystone-cleanup-fernet-keys`, ServiceAccount `keystone-cleanup-fernet-rotate`, Role `keystone-cleanup-fernet-rotate`, RoleBinding `keystone-cleanup-fernet-rotate`, PushSecret `keystone-cleanup-fernet-keys-backup`, Job `keystone-cleanup-db-sync`, Database `keystone-cleanup`, User `keystone-cleanup`, Grant `keystone-cleanup` |
+| 4 | Assert all owned resources deleted | `error` | 12 error assertions verifying NotFound for: Deployment `keystone-cleanup`, Service `keystone-cleanup`, CronJob `keystone-cleanup-fernet-rotate`, Secret `keystone-cleanup-fernet-keys`, ServiceAccount `keystone-cleanup-fernet-rotate`, Role `keystone-cleanup-fernet-rotate`, RoleBinding `keystone-cleanup-fernet-rotate`, PushSecret `keystone-cleanup-fernet-keys-backup`, Job `keystone-cleanup-db-sync`, Database `keystone-cleanup`, User `keystone-cleanup`, Grant `keystone-cleanup` |
 | 5 | Assert dynamically-named ConfigMap deleted | `script` | Inverted grep verifies no ConfigMap matching `keystone-cleanup-config-*` remains after garbage collection |
 
 **Fixtures:** `00-keystone-cr.yaml`
@@ -345,7 +345,7 @@ container image updates and Ready=True is maintained after the rollout completes
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-upgrade` |
-| 2 | Assert Ready and initial image tag | `assert` + `script` (5m) | Ready=True; script verifies Deployment `keystone-upgrade-api` container image contains `2025.2` |
+| 2 | Assert Ready and initial image tag | `assert` + `script` (5m) | Ready=True; script verifies Deployment `keystone-upgrade` container image contains `2025.2` |
 | 3 | Patch image tag | `patch` | Applies `01-patch-image.yaml` — patches `spec.image.tag` to `2025.2-upgraded` |
 | 4 | Assert image updated and Ready maintained | `script` (120s) + `assert` (5m) | Script polls up to 120s to verify Deployment image contains `2025.2-upgraded`; assert verifies Ready=True, availableReplicas > 0, and updatedReplicas == replicas (rollout complete) |
 
@@ -373,7 +373,7 @@ which focuses on internal state machine mechanics (skip-level rejection).
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with tag 2025.2 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-release-upgrade` in managed mode with tag 2025.2 |
-| 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2025.2; script verifies Deployment `keystone-release-upgrade-api` container image ends with `2025.2` |
+| 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2025.2; script verifies Deployment `keystone-release-upgrade` container image ends with `2025.2` |
 | 3 | Verify API before upgrade | `script` (30s) | `kubectl run curl-test-release-pre` with python3 `urllib.request` — verifies GET `/v3` succeeds |
 | 4 | Patch image tag to 2026.1 | `patch` | Applies `01-patch-upgrade.yaml` — patches `spec.image.tag` to `2026.1` |
 | 5 | Assert upgrade completes | `assert` (5m) + `script` | `installedRelease`=2026.1, Ready=True (AllReady); scripts verify db-expand, db-migrate, db-contract Jobs exist and Deployment image ends with `2026.1`; assert verifies `updatedReplicas == replicas` and `availableReplicas > 0` |
@@ -415,10 +415,10 @@ or resources.
 | --- | --- | --- | --- |
 | 1 | Apply both CR fixtures | `apply` | Applies `00-keystone-cr-a.yaml` and `01-keystone-cr-b.yaml` — Keystone CRs `keystone-concurrent-a` and `keystone-concurrent-b` sharing `keystone-db` secretRef and `keystone-admin` adminPasswordSecretRef |
 | 2 | Assert both CRs Ready=True | `assert` (5m) | Both CRs have Ready=True with reason AllReady |
-| 3 | Assert unique Deployments and Services | `assert` (5m) | Deployment `keystone-concurrent-a-api` and `keystone-concurrent-b-api` both have `availableReplicas > 0`; Services `keystone-concurrent-a-api` and `keystone-concurrent-b-api` both have port 5000 |
+| 3 | Assert unique Deployments and Services | `assert` (5m) | Deployment `keystone-concurrent-a` and `keystone-concurrent-b` both have `availableReplicas > 0`; Services `keystone-concurrent-a` and `keystone-concurrent-b` both have port 5000 |
 | 4 | Assert unique Fernet CronJobs and ConfigMaps | `assert` + `script` | CronJobs `keystone-concurrent-a-fernet-rotate` and `keystone-concurrent-b-fernet-rotate` exist; script verifies ConfigMaps `keystone-concurrent-a-config-*` and `keystone-concurrent-b-config-*` exist |
 | 5 | Delete CR-A and assert cleanup | `delete` + `error` + `script` | Deletes Keystone CR `keystone-concurrent-a`; error assertions verify Deployment, Service, and CronJob for CR-A are deleted; script verifies exactly 1 Deployment with `app.kubernetes.io/name=keystone` remains |
-| 6 | Assert CR-B still Ready | `assert` (5m) | CR-B has Ready=True with reason AllReady and Deployment `keystone-concurrent-b-api` has `availableReplicas > 0` |
+| 6 | Assert CR-B still Ready | `assert` (5m) | CR-B has Ready=True with reason AllReady and Deployment `keystone-concurrent-b` has `availableReplicas > 0` |
 
 **Fixtures:** `00-keystone-cr-a.yaml`, `01-keystone-cr-b.yaml`
 
@@ -561,7 +561,7 @@ patching with a valid class sets it; patching with empty string removes it.
 | --- | --- | --- | --- |
 | 1 | Create PriorityClass | `apply` | `00-priority-class.yaml` (cluster-scoped) |
 | 2 | Apply Keystone CR without priorityClassName | `apply` | `01-keystone-cr.yaml` — Keystone CR `keystone-pc` |
-| 3 | Assert Ready and empty priorityClassName | `assert` + `script` | Deployment `keystone-pc-api` has empty `.spec.template.spec.priorityClassName` |
+| 3 | Assert Ready and empty priorityClassName | `assert` + `script` | Deployment `keystone-pc` has empty `.spec.template.spec.priorityClassName` |
 | 4 | Patch: set priorityClassName | `patch` | `02-patch-priority-class.yaml` — sets a valid class |
 | 5 | Assert priorityClassName applied | `script` | Deployment carries the patched class |
 | 6 | Patch: clear priorityClassName | `patch` | `03-patch-empty-priority-class.yaml` |
@@ -640,7 +640,7 @@ an empty slice explicitly disables all constraints.
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR without TSC | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-tsc` |
-| 2 | Assert Ready + 2 default constraints | `assert` (5m) | Deployment `keystone-tsc-api` carries zone-spread and hostname-spread |
+| 2 | Assert Ready + 2 default constraints | `assert` (5m) | Deployment `keystone-tsc` carries zone-spread and hostname-spread |
 | 3 | Patch: custom TSC | `patch` | `01-patch-custom-tsc.yaml` |
 | 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly |
 | 5 | Patch: empty TSC | `patch` | `02-patch-empty-tsc.yaml` |
@@ -775,6 +775,52 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 
 ---
 
+### namespace-scoped-rbac
+
+**File:** `tests/e2e/keystone/namespace-scoped-rbac/chainsaw-test.yaml`
+
+**Purpose:** Validates that the keystone-operator Helm chart's
+`rbac.namespaceScoped=true` path deploys correctly and still reconciles a
+Keystone CR to Ready. The new cluster-scoped default deploys the operator
+into the dedicated `keystone-system` namespace; this test intentionally
+exercises a *different* release namespace (`openstack`) with namespace-scoped
+RBAC, proving the operator is not hard-wired to `keystone-system` and that the
+`namespaceScoped=true` code path still produces a `Role`/`RoleBinding` (not a
+`ClusterRole`/`ClusterRoleBinding`). It runs in `openstack` — where the shared
+infrastructure (MariaDB, Memcached, Secrets) already lives — because a
+namespace-scoped operator can only watch its own release namespace.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Deploy operator with namespace-scoped RBAC | `script` (120s) | `helm install keystone-operator-ns-scoped` into `openstack` with `--set rbac.namespaceScoped=true --set webhook.enabled=false` |
+| 2 | Assert Role/RoleBinding exist, no ClusterRole | `assert` (5m) + `script` | `Role` and `RoleBinding` named `keystone-operator-ns-scoped` exist in `openstack`; script asserts `kubectl get clusterrole keystone-operator-ns-scoped` fails (no cluster-scoped RBAC was created) |
+| 3 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-ns-scoped` |
+| 4 | Assert successful reconciliation | `assert` (5m) | Ready=True with reason AllReady |
+| 5 | Cleanup Helm release | `script` | `helm uninstall keystone-operator-ns-scoped -n openstack` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Design note:** This test **pins** to a pre-existing namespace via
+`spec.namespace: openstack` — Chainsaw uses, but does not create, that
+namespace, since the shared infrastructure already lives there and a
+namespace-scoped operator cannot watch across namespaces. This is a
+**different mechanism** from [`pod-security-restricted`](#pod-security-restricted),
+which **opts out** of Chainsaw's per-test namespace via `spec.namespace: ""`
+and applies its own PSS-labelled namespace instead. Both tests avoid a
+`chainsaw-*` per-test namespace, but for different reasons — see the
+`pod-security-restricted` design notes above for the opt-out mechanism.
+
+**Cross-references:**
+
+- Helm chart RBAC templating: `operators/keystone/helm/keystone-operator/templates/`.
+- Related but **not** reused (different mechanism, see design note above):
+  [`pod-security-restricted`](#pod-security-restricted), which opts out of the
+  per-test namespace entirely rather than pinning to a pre-existing one.
+
+---
+
 ## Assertion Patterns
 
 The test suites use three Chainsaw assertion patterns:
@@ -813,7 +859,7 @@ Verifies that a resource does **not** exist. Used in `deletion-cleanup` and
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: keystone-cleanup-api
+            name: keystone-cleanup
             namespace: openstack
 ```
 

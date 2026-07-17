@@ -122,7 +122,10 @@ spec:
   services:
     keystone:
       replicas: 1
-      # Drop publicEndpoint on the default port 443 — the operator then derives
+      # Set explicitly because this walkthrough's kind cluster maps host port
+      # 8443 (Step 2), not the default 443 — the port cannot be derived from
+      # the gateway hostname alone. Reachable on the default port 443
+      # instead? Omit publicEndpoint and the operator derives
       # https://keystone.127-0-0-1.nip.io/v3 from the gateway hostname.
       publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
       gateway:

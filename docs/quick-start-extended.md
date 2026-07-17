@@ -273,7 +273,9 @@ before running the chaos E2E suites — see
 list and `make e2e-chaos` workflow.
 :::
 
-::: tip Enabling Prometheus & Grafana
+### Enabling Prometheus & Grafana {#enabling-prometheus--grafana}
+
+::: tip
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `monitoring` namespace absent so first-run
 deployments stay lean and do not pin extra CPU/memory on a developer laptop.

@@ -8,8 +8,8 @@ quadrant: operator
 Reference documentation for the c5c3-operator ControlPlane Custom Resource
 Definition. The ControlPlane CRD is the top-level aggregate that
 projects an OpenStack control plane: it owns the shared infrastructure
-references (database, cache), a curated set of per-service specs (today:
-Keystone), and the K-ORC (OpenStack Resource Controller) integration that
+references (database, cache), a curated set of per-service specs (Keystone and
+Horizon today), and the K-ORC (OpenStack Resource Controller) integration that
 bootstraps and rotates the admin application credential. The reconciler (L2)
 materializes this aggregate into the individual per-service CRs — see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
@@ -106,6 +106,13 @@ spec:
         hostname: keystone.example.com
         path: /
       publicEndpoint: https://keystone.example.com/v3
+    horizon:
+      replicas: 3
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: horizon.example.com
+        path: /
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -134,6 +141,9 @@ status:
   updatePhase: Idle
   services:
     - name: keystone
+      ready: true
+      release: "2025.2"
+    - name: horizon
       ready: true
       release: "2025.2"
   adminApplicationCredential:
@@ -663,6 +673,37 @@ One endpoint row of a managed catalog entry.
 | --- | --- | --- | --- | --- |
 | `interface` | `string` (`public` \| `internal` \| `admin`) | Yes | — | The catalog interface this endpoint is published under. Keys the `listType=map` list. |
 | `url` | `string` | Yes | — | The endpoint URL registered in the catalog. Must match `^https?://[^\s/]+` and be at most 1024 bytes — the cap mirrors K-ORC's own `EndpointResourceSpec.url`, so a URL admitted here can never be rejected downstream. The validating webhook mirrors both the shape and the cap with a full `net/url` parse. |
+
+---
+
+## ServiceHorizonSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the
+Horizon dashboard, mirroring the [`ServiceKeystoneSpec`](#servicekeystonespec)
+decision above: the reconciler (L2) **projects** this struct into a `Horizon`
+CR named `{controlplane.Name}-horizon`; the cache and the Keystone endpoint of
+that Horizon CR are **derived** from the ControlPlane
+(`infrastructure.cache` and the Keystone child's naming convention) rather
+than set by the user here.
+
+The projection reuses the ControlPlane's own specs so the dashboard points at
+the same backing services as Keystone, with one override: `cache.backend` is
+always set to the Horizon Django default
+(`django.core.cache.backends.memcached.PyMemcacheCache`), not the
+oslo.cache dogpile path (`dogpile.cache.pymemcache`) Keystone consumes — Django
+rejects the dogpile path with `InvalidCacheBackendError`, so the dashboard
+would never go Ready if it inherited it unchanged. The Keystone endpoint the
+dashboard's Django backend talks to is **always** the cluster-local Service
+URL derived from the Keystone child's naming convention — never the external
+`publicEndpoint` or gateway hostname, which the dashboard pods may not be able
+to reach.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` (Horizon operator default, 3) | Overrides the number of dashboard replicas. When `nil`, the reconciler assigns `commonv1.DefaultReplicas` (the same default the Horizon defaulting webhook applies) unconditionally, so clearing the field reverts the child to the default instead of pinning a stale value. Minimum: 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Horizon container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/horizon:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected dashboard externally via a Gateway API HTTPRoute. When `nil` (the default), no HTTPRoute is projected and the dashboard is reachable in-cluster only. A nil value also **tears down** a previously-projected HTTPRoute (the reconciler DeepCopies the field verbatim each pass). |
+| `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"horizon-secret-key"`, key `"secret-key"` | References the Secret holding the Django `SECRET_KEY` the dashboard replicas share. The default is the kind-infrastructure shim Secret, which is pinned to the **default** ControlPlane identity — a second ControlPlane **must** set this field explicitly so each dashboard reads distinct `SECRET_KEY` material. |
 
 ---
 

@@ -32,7 +32,7 @@ and are registered by `RegisterMetrics()` via their `Register()` function.
 All collectors attach to the controller-runtime registry
 (`sigs.k8s.io/controller-runtime/pkg/metrics`) and are served on the
 operator's metrics listener at `:8080/metrics` by default; see
-[How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md)
+[How to enable the Keystone operator metrics endpoint](../../guides/enable-keystone-operator-metrics.md)
 for cluster-side wiring.
 
 ## Metric summary
@@ -103,7 +103,14 @@ sub-reconciler names and the 14 Ready sub-condition types listed in
 `subConditionTypes`. The `sub_reconciler` → `condition_type` mapping is
 one-to-one for most entries; the exceptions (`Secrets`,
 `DBConnectionSecret`, `Config` all map to `SecretsReady`) collapse into
-fewer distinct (sub_reconciler, condition_type) pairs in practice.
+fewer distinct (sub_reconciler, condition_type) pairs in practice. Only
+`reconcileSecrets` ever drives `SecretsReady` to `True`; `Config` and
+`DBConnectionSecret` only ever set it `False` on their own failure paths
+(`markConfigFailed` and the DB-connection error path, respectively) — the
+shared condition type means a config-render failure and an upstream-secret
+failure both surface as `SecretsReady=False`, but the distinct
+`sub_reconciler` label on this error counter still disambiguates which one
+during incident triage.
 
 The counter is **not pre-created**; a (sub_reconciler, condition_type)
 series only appears after its first error, so a healthy fleet emits no
@@ -159,7 +166,7 @@ annotation on both Secrets means rotation has never completed (alert via
 PromQL `absent(...)`); a malformed annotation is a script bug surfaced
 via the `RotationAnnotationInvalid` event. Validation rejections of a
 staging payload are tracked via the `RotationRejected` event (see
-[Keystone Controller Events](./keystone/keystone-events.md)) and indirectly via
+[Keystone Controller Events](./keystone-events.md)) and indirectly via
 `keystone_operator_reconcile_errors_total{condition_type="FernetKeysReady"}`.
 
 **Series lifecycle.** When a Keystone CR is deleted, every rotation-age
@@ -306,7 +313,7 @@ histogram_quantile(
 )
 ```
 
-The [reconcile-performance benchmark](./testing/reconcile-performance-benchmark.md)
+The [reconcile-performance benchmark](../testing/reconcile-performance-benchmark.md)
 scripts a 1/5/25-CR run and reports these percentiles, and can gate on the
 steady-state end-to-end p95 as a regression check.
 
@@ -330,13 +337,13 @@ The ServiceMonitor selector targets the operator Service by
 (`ServiceMonitor`) must be installed in the cluster; the chart does
 **not** install them. For the end-to-end operator-side enablement flow,
 see
-[How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md).
+[How to enable the Keystone operator metrics endpoint](../../guides/enable-keystone-operator-metrics.md).
 
 ---
 
 ## Related
 
-- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
-- [Observability & Diagnostics](../guides/observability.md) — human-facing status, conditions, and events.
-- [How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
-- [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard consuming the metrics above.
+- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone-reconciler.md#metrics-instrumentation) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
+- [Observability & Diagnostics](../../guides/observability.md) — human-facing status, conditions, and events.
+- [How to enable the Keystone operator metrics endpoint](../../guides/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
+- [`operators/keystone/dashboards/keystone-operator.json`](../../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard consuming the metrics above.

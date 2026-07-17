@@ -187,7 +187,7 @@ Keystone service:
 | Section | Key | Value | Purpose |
 | --- | --- | --- | --- |
 | `[DEFAULT]` | `log_dir` | `/tmp/tempest-logs` | Log output directory inside container |
-| `[identity]` | `uri_v3` | `http://keystone-tempest-api.openstack.svc:5000/v3` | Keystone v3 API endpoint (in-cluster DNS) |
+| `[identity]` | `uri_v3` | `http://keystone-tempest-2025-2.openstack.svc:5000/v3` | Keystone v3 API endpoint (in-cluster DNS) |
 | `[auth]` | `use_dynamic_credentials` | `false` | Use static admin credentials (no tenant creation) |
 | `[auth]` | `admin_username` | `admin` | Admin user for API authentication |
 | `[auth]` | `admin_password` | `${KEYSTONE_ADMIN_PASSWORD}` | Injected at runtime from K8s secret |
@@ -452,8 +452,8 @@ CR, and K8s service name.
 
 | Release | Config directory | CR name | K8s service name |
 | --- | --- | --- | --- |
-| `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | `keystone-tempest-2025-2-api` |
-| `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | `keystone-tempest-2026-1-api` |
+| `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | `keystone-tempest-2025-2` |
+| `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | `keystone-tempest-2026-1` |
 
 **Step sequence:**
 

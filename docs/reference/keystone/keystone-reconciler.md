@@ -285,6 +285,18 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌───────────────────────┐                                                   │
+│  │ reconcileDatabaseTLS  │  Issue/verify DB client Certificate (mTLS)        │
+│  │                       │  Sets: DatabaseTLSReady                           │
+│  └────────┬──────────────┘  Requeue: 15s while cert-manager issues           │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌─────────────────────────────┐                                            │
+│  │ reconcileDBConnectionSecret │  Materialise DSN into {name}-db-connection │
+│  │                             │  Sets: SecretsReady (False on failure)     │
+│  └────────┬────────────────────┘  Requeue: 15s; Returns: dbConnectionHash    │
+│           │                                                                  │
+│           ▼                                                                  │
 │  ┌────────────────────────────┐                                              │
 │  │ reconcileIdentityBackends  │  Project DomainReady backends                │
 │  │                            │  Sets: IdentityBackendsReady                 │
@@ -523,6 +535,8 @@ output (other than conditions merged after the group completes).
 | Sub-Reconciler | Inputs | Condition Type | Dependencies | Parallel |
 | --- | --- | --- | --- | --- |
 | `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
+| `reconcileDatabaseTLS` | `spec.database.tls` | `DatabaseTLSReady` | Secrets (CA/client-cert material must be synced) | no (must precede DBConnectionSecret) |
+| `reconcileDBConnectionSecret` | DB secret, DB TLS mount path | `SecretsReady` (False on failure; *returns dbConnectionHash*) | Secrets, DatabaseTLS (ssl_\* DSN params reference its mount path) | no (produces dbConnectionHash) |
 | `reconcileConfig` | CR spec, DB secret | `SecretsReady` (False on failure; *returns configMapName*) | Secrets | no (produces configMapName) |
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
@@ -1424,8 +1438,9 @@ after a full reconcile loop, every condition in the status carries the correct
 
 | Condition Type | Set By | Description |
 | --- | --- | --- |
-| `SecretsReady` | `reconcileSecrets` | ESO-provided credentials are synced |
+| `SecretsReady` | `reconcileSecrets` (also set False by `reconcileDBConnectionSecret` and, via `markConfigFailed`, by `reconcileConfig`) | ESO-provided credentials are synced; also the shared failure signal for the two downstream sub-reconcilers that consume those credentials before their own condition type would otherwise apply |
 | `DatabaseReady` | `reconcileDatabase` | MariaDB CRs ready and db_sync complete |
+| `DatabaseTLSReady` | `reconcileDatabaseTLS` | Client Certificate for DB mTLS issued, externally managed (brownfield), or not required (TLS disabled) |
 | `FernetKeysReady` | `reconcileFernetKeys` | Fernet Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `CredentialKeysReady` | `reconcileCredentialKeys` | Credential keys Secret, script ConfigMap, CronJob, and PushSecret ensured |
 | `NetworkPolicyReady` | `reconcileNetworkPolicy` | NetworkPolicy configured or not required |
@@ -1489,6 +1504,116 @@ causing controller-runtime exponential backoff.
 **Shared library calls:** `secrets.GateStoreReady()` (which calls
 `secrets.IsStoreRefReady()` — cluster stores via `IsClusterSecretStoreReady`,
 namespaced stores via `IsSecretStoreReady`), `secrets.WaitForExternalSecret()`
+
+---
+
+### reconcileDatabaseTLS
+
+**File:** `operators/keystone/internal/controller/reconcile_databasetls.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+```
+
+**Purpose:** Provision, or record the absence of, the client certificate
+Keystone presents to MariaDB/MaxScale for mutual TLS. Runs immediately after
+`reconcileSecrets` — the CA/client-cert material referenced by
+`spec.database.tls` must be synced before `reconcileDBConnectionSecret`
+appends the `ssl_*` DSN parameters that point at it. Three lifecycle paths:
+
+- **NotRequired** — `spec.database.tls` is nil or disabled: plaintext TCP,
+  preserving pre-existing behavior. No Certificate is created; a previously
+  Managed Certificate is deleted so cert-manager stops renewing it.
+- **ExternallyManaged** — TLS enabled but the database is brownfield
+  (`spec.database.host`, no `clusterRef`): the operator does not own the
+  external database's trust domain, so the client keypair is supplied
+  out-of-band via `spec.database.tls.clientCertSecretRef`. No Certificate is
+  created.
+- **Managed** — TLS enabled and the database is a managed MariaDB cluster
+  (`spec.database.clusterRef`): the operator issues a cert-manager
+  `Certificate` from the shared OpenStack DB CA issuer
+  (`openstack-db-ca-issuer`) so MariaDB/MaxScale trust it via their
+  `clientCASecretRef`.
+
+**Managed Mode Resource:**
+
+| Resource | Name | Key Spec Fields |
+| --- | --- | --- |
+| `Certificate` | `{name}-db-client` | `secretName: {name}-db-client`, `commonName: {name}` (matches the managed-mode DB username), `issuerRef: openstack-db-ca-issuer` (ClusterIssuer), usages: client auth, digital signature, key encipherment |
+
+**Condition Contract:**
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `True` | `NotRequired` | "Database TLS is not enabled; using plaintext connection" | — |
+| `False` | `MissingCertificateRefs` | "Database TLS is enabled but caBundleSecretRef.name and clientCertSecretRef.name must both be set" | — (error also returned) |
+| `True` | `ExternallyManaged` | "Database TLS uses externally managed client certificate Secret {name} (brownfield database)" | — |
+| `False` | `CertificatePending` | "Waiting for cert-manager to issue database client Certificate {name}" | 15s |
+| `True` | `CertificateIssued` | "Database client Certificate {name} issued into Secret {name}" | — |
+
+**Error handling:** The `MissingCertificateRefs` path both sets the `False`
+condition and returns an error (fail-closed against a bypassed or
+upgrade-pruned admission validation, so the wedge is diagnosable instead of
+producing an invalid volume the kubelet would reject). Errors from
+`commontls.EnsureCertificate()` are wrapped and returned directly (no
+condition set), causing controller-runtime exponential backoff.
+
+**Shared library calls:** `commontls.EnsureCertificate()`
+
+---
+
+### reconcileDBConnectionSecret
+
+**File:** `operators/keystone/internal/controller/reconcile_dbconnection_secret.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context,
+    keystone *keystonev1alpha1.Keystone) (ctrl.Result, string, error)
+```
+
+Like `reconcileConfig`, this sub-reconciler does not return the standard
+`(ctrl.Result, error)` shape: it also returns the SHA-256 digest of the
+assembled DSN, threaded to `reconcileDeployment` so a rotated Dynamic
+(engine-issued) credential rolls the Deployment without that step reading the
+Secret content itself. The digest is empty on the requeue/error paths where no
+derived Secret was materialised.
+
+**Purpose:** Read the upstream ESO-synced database credentials Secret
+(`spec.database.secretRef`) and write the fully-formed pymysql connection URL
+into a derived Secret named `{name}-db-connection` (key `connection`). The
+password previously lived in the `keystone.conf` ConfigMap, which lacks
+encryption-at-rest and has weaker RBAC than a Secret; this sub-reconciler
+keeps the password out of the ConfigMap entirely. The Keystone container
+consumes the URL via the `OS_DATABASE__CONNECTION` env var. When
+`spec.database.tls` is enabled, the DSN also carries the `ssl_ca` / `ssl_cert`
+/ `ssl_key` query parameters pointing at the client TLS material
+`reconcileDatabaseTLS` projects.
+
+**Condition Contract:** this sub-reconciler does not own a condition type of
+its own — on failure it sets the **same** `SecretsReady` condition
+`reconcileSecrets` uses, since both represent "upstream credentials not yet
+usable." On success it sets no condition (the derived Secret is an internal
+artifact with no independently advertised readiness).
+
+| Status | Reason | Message | RequeueAfter |
+| --- | --- | --- | --- |
+| `False` | `WaitingForDBCredentials` | "Upstream database credentials Secret {namespace}/{name} not found" | 15s |
+| `False` | `WaitingForDBCredentials` | "Upstream database credentials Secret {namespace}/{name} missing key \"username\"" | 15s |
+| `False` | `WaitingForDBCredentials` | "Upstream database credentials Secret {namespace}/{name} missing key \"password\"" | 15s |
+
+**Error handling:** API errors reading the upstream Secret (other than
+NotFound), errors assembling the TLS DSN parameters
+(`appendDBTLSParams`), and errors creating/updating the derived Secret are all
+wrapped with context and returned directly (no condition set), causing
+controller-runtime exponential backoff.
+
+**Shared library calls:** `database.ResolveUsername()`, `database.BuildDSN()`,
+`database.AppendTLSParams()`
 
 ---
 
@@ -3198,6 +3323,8 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
 | --- | --- | --- | --- |
 | `reconcileSecrets` | ESO not synced | 15s | API error → exponential backoff |
+| `reconcileDatabaseTLS` | cert-manager issuing Certificate | 15s | `MissingCertificateRefs` (fail-closed) or `EnsureCertificate` API error → exponential backoff |
+| `reconcileDBConnectionSecret` | Upstream credentials Secret/key not yet synced | 15s (`SecretsReady=False`) | API error reading/writing Secrets, or DSN assembly error → exponential backoff |
 | `reconcileDatabase` | MariaDB CRs not ready | 30s | `ErrJobFailed` from db_sync |
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
 | `reconcileFernetKeys` | Initial key generation / rotation applied | 15s | API error → exponential backoff |
@@ -3240,6 +3367,8 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | Secret | `{name}-credential-keys-rotation` | Keystone CR (rotation staging) |
 | CronJob | `{name}-credential-rotate` | Keystone CR |
 | PushSecret | `{name}-credential-keys-backup` | Keystone CR |
+| Certificate | `{name}-db-client` | Keystone CR (managed database + TLS enabled only) |
+| Secret | `{name}-db-connection` | Keystone CR |
 | ConfigMap | `{name}-config-{hash}` | Keystone CR |
 | Secret | `{name}-domains-{hash}` | Keystone CR (only while at least one KeystoneIdentityBackend is projected) |
 | Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
@@ -3500,7 +3629,7 @@ contract violation.
 
 For the authoritative catalogue of registered metrics — names, labels,
 and histogram buckets — see
-[Keystone Operator Prometheus Metrics](../keystone-operator-metrics.md).
+[Keystone Operator Prometheus Metrics](./keystone-operator-metrics.md).
 
 ### The `instrumentSubReconciler` helper
 

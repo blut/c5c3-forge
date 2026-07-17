@@ -139,7 +139,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
 - **Prometheus metrics + ServiceMonitor.** Reconcile duration, per-condition
   error counts, key rotation age, db_sync outcomes and duration.
   Contract-tested against this catalogue. See
-  [Operator Metrics](../keystone-operator-metrics.md) and the
+  [Operator Metrics](./keystone-operator-metrics.md) and the
   [enablement guide](../../guides/enable-keystone-operator-metrics.md).
 
 ## Day-2 Operations

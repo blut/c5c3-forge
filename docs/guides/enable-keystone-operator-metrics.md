@@ -12,7 +12,7 @@ ServiceMonitor shipped with the `keystone-operator` Helm chart, importing the re
 verifying that scrape targets transition to `Up`.
 
 For the authoritative metric catalogue (names, labels, buckets), see
-[Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md).
+[Keystone Operator Prometheus Metrics](../reference/keystone/keystone-operator-metrics.md).
 For the controller-side instrumentation contract, see
 [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
@@ -204,7 +204,7 @@ curl -s http://localhost:8080/metrics \
 ```
 
 Expected: `# TYPE` and `# HELP` lines for every metric in the
-[reference catalogue](../reference/keystone-operator-metrics.md), for
+[reference catalogue](../reference/keystone/keystone-operator-metrics.md), for
 example:
 
 ```
@@ -258,7 +258,7 @@ Operators with stricter cluster policies must take extra steps:
 The metrics endpoint deliberately exposes **no credentials, secrets,
 or per-tenant payloads** — only Prometheus collector samples described
 in the
-[reference catalogue](../reference/keystone-operator-metrics.md) — so
+[reference catalogue](../reference/keystone/keystone-operator-metrics.md) — so
 the default plain-HTTP exposure is appropriate for cluster-internal
 scraping. The hardening guidance above applies only when external
 policy demands a stricter posture.
@@ -284,7 +284,7 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 
 ## See also
 
-- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
+- [Keystone Operator Prometheus Metrics](../reference/keystone/keystone-operator-metrics.md) — authoritative metric catalogue.
 - [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../guides/observability.md) — conditions, events, and logs.
 - [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.

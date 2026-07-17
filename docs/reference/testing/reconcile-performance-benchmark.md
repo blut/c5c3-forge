@@ -17,7 +17,7 @@ p50/p95/p99 reconcile latency for two histograms:
 
 The percentiles are computed with the same `sum by (le)` aggregation and linear
 interpolation Prometheus uses, so the numbers line up with the
-[reconcile-duration SLOs](../keystone-operator-metrics.md#reconcile-duration-slos)
+[reconcile-duration SLOs](../keystone/keystone-operator-metrics.md#reconcile-duration-slos)
 and the bundled Grafana dashboard.
 
 ## Prerequisites

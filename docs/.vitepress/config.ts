@@ -62,7 +62,7 @@ export default defineConfig({
               { text: 'Reconciler Architecture', link: '/reference/keystone/keystone-reconciler' },
               { text: 'Upgrade Flow', link: '/reference/keystone/keystone-upgrade-flow' },
               { text: 'Schema Drift Detection', link: '/reference/keystone/keystone-schema-drift-detection' },
-              { text: 'Operator Metrics', link: '/reference/keystone-operator-metrics' },
+              { text: 'Operator Metrics', link: '/reference/keystone/keystone-operator-metrics' },
               { text: 'Operator NetworkPolicy', link: '/reference/keystone/keystone-operator-networkpolicy' },
             ],
           },

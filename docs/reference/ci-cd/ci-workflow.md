@@ -911,13 +911,13 @@ strategy:
   matrix:
     include:
       - release: "2025.2"
-        config-dir: tests/tempest/keystone
-        cr-name: keystone-tempest
-        service-k8s-name: keystone-tempest-api
+        config-dir: tests/tempest/keystone-2025-2
+        cr-name: keystone-tempest-2025-2
+        service-k8s-name: keystone-tempest-2025-2
       - release: "2026.1"
         config-dir: tests/tempest/keystone-2026-1
         cr-name: keystone-tempest-2026-1
-        service-k8s-name: keystone-tempest-2026-1-api
+        service-k8s-name: keystone-tempest-2026-1
 ```
 
 Each matrix entry specifies: the release version, the Tempest configuration directory,
@@ -1190,12 +1190,12 @@ handles local execution including image building).
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `SERVICE` | No | `keystone` | Service under test |
-| `CONFIG_DIR` | No | `tests/tempest/<SERVICE>` | Directory containing `tempest.conf` template and include/exclude lists |
+| `CONFIG_DIR` | No | `tests/tempest/<SERVICE>-2025-2` | Directory containing `tempest.conf` template and include/exclude lists |
 | `NAMESPACE` | No | `openstack` | Kubernetes namespace |
 | `ADMIN_SECRET` | No | `keystone-admin` | Secret name holding admin password |
 | `OUTPUT_DIR` | No | `_output/tempest` | Test output directory |
 | `TEMPEST_IMAGE` | No | `c5c3/tempest:local` | Tempest container image |
-| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-api` | K8s Service name for port-forwarding (allows override for release-specific CR names, e.g. `keystone-tempest-2026-1-api`) |
+| `SERVICE_K8S_NAME` | No | `<SERVICE>-tempest-2025-2` | K8s Service name for port-forwarding (allows override for release-specific CR names, e.g. `keystone-tempest-2026-1`) |
 
 The script:
 1. Extracts the admin password from the Kubernetes secret
