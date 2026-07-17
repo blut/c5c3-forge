@@ -118,15 +118,31 @@ func TestReconcileConfig_PasteContainsPipelineAndComposite(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	paste := renderedPaste(t, r, art)
-	g.Expect(paste).To(ContainSubstring("[pipeline:glance-api-keystone]"))
-	// The healthcheck filter must stay in the pipeline (the /healthcheck probes
-	// depend on it) and the injected middleware appears after the base filters.
-	g.Expect(paste).To(MatchRegexp(`pipeline = .*healthcheck.*authtoken context audit rootapp`))
-	g.Expect(paste).To(ContainSubstring("[filter:healthcheck]"))
+	// The flavored name glance loads ([paste_deploy] flavor = keystone) must be
+	// the root composite that routes /healthcheck to the healthcheck app.
+	// oslo.middleware ≥ glance 32.0.0 (2026.1) refuses Healthcheck as a paste
+	// filter (NotImplementedError at app load), so it must never appear in the
+	// pipeline directive.
+	g.Expect(paste).To(ContainSubstring("[composite:glance-api-keystone]"))
+	g.Expect(paste).To(ContainSubstring("/healthcheck = healthcheck"))
+	g.Expect(paste).To(ContainSubstring("[app:healthcheck]"))
+	g.Expect(paste).To(ContainSubstring("paste.app_factory = oslo_middleware:Healthcheck.app_factory"))
+	g.Expect(paste).NotTo(ContainSubstring("[filter:healthcheck]"))
+	// The filter pipeline the composite mounts at /, with the injected
+	// middleware after the base filters.
+	g.Expect(paste).To(ContainSubstring("[pipeline:api]"))
+	g.Expect(paste).To(MatchRegexp(`pipeline = cors http_proxy_to_wsgi versionnegotiation authtoken context audit rootapp`))
 	g.Expect(paste).To(ContainSubstring("[filter:audit]"))
 	// The rootapp composite the PipelineSpec cannot express.
 	g.Expect(paste).To(ContainSubstring("[composite:rootapp]"))
 	g.Expect(paste).To(ContainSubstring("paste.composite_factory = glance.api:root_app_factory"))
+	// The versioned app factories must resolve to real paste-deploy targets:
+	// glance-api loads them at startup, and a dangling reference crash-loops
+	// every API pod ("module 'glance.api.v2.router' has no attribute ...").
+	g.Expect(paste).To(ContainSubstring("[app:apiv2app]"))
+	g.Expect(paste).To(ContainSubstring("paste.app_factory = glance.api.v2.router:API.factory"))
+	g.Expect(paste).To(ContainSubstring("[app:apiversions]"))
+	g.Expect(paste).To(ContainSubstring("paste.app_factory = glance.api.versions:create_resource"))
 }
 
 func TestReconcileConfig_ExtraConfigWins(t *testing.T) {

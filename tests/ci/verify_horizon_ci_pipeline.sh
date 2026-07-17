@@ -38,8 +38,9 @@ extract_yaml_job_section() {
 
 # Run ci-resolve-changes.sh with the supplied env and echo the GITHUB_OUTPUT
 # contents. ALL_OPERATORS deliberately mirrors the ci.yaml value ("keystone
-# c5c3 horizon") so the behavioural assertions exercise the real resolution
-# codepath. Args are passed as KEY=VALUE pairs through the caller's env block.
+# c5c3 horizon glance") so the behavioural assertions exercise the real
+# resolution codepath. Args are passed as KEY=VALUE pairs through the caller's
+# env block.
 run_resolve() {
   local out
   out=$(mktemp)
@@ -105,7 +106,7 @@ test_horizon_test_matrices() {
   echo "Test: unit and integration test matrices include horizon"
 
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon\]" "$CI_YAML")
+  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance\]" "$CI_YAML")
 
   assert_eq \
     "both test and test-integration matrices list horizon" \
@@ -163,7 +164,7 @@ test_resolve_emits_horizon_on_operator_change() {
 
   local resolved operators has
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon" \
+    ALL_OPERATORS="keystone c5c3 horizon glance" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -200,7 +201,7 @@ test_resolve_emits_all_on_go_common_change() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon" \
+    ALL_OPERATORS="keystone c5c3 horizon glance" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -231,7 +232,7 @@ test_resolve_emits_horizon_on_tag_push() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon" \
+    ALL_OPERATORS="keystone c5c3 horizon glance" \
     GITHUB_REF="refs/tags/v1.0.0" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -257,7 +258,7 @@ test_resolve_excludes_horizon_on_keystone_only_change() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon" \
+    ALL_OPERATORS="keystone c5c3 horizon glance" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="true" \
     FILTER_c5c3="false" \
