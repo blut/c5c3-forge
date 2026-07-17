@@ -112,7 +112,10 @@ End with a verdict for the doc family or topic.
 
 - This skill is read-only; hand findings to [[fix-docs]] to apply them.
 - Pair this with [[check-doc-structure]] for page-level navigation and
-  with [[check-doc-expressions]] for readability.
+  with [[check-doc-expressions]] for readability and the
+  `STYLE_GUIDE.md` rhetorical-device budget — style drift is out of
+  scope here even when it happens to repeat across pages; that's a
+  consistency-shaped symptom of a style problem, not a truth mismatch.
 - If the disagreement is with code, config, or generated output, cite the
   code-side source of truth directly rather than treating the doc as the
   canonical side.

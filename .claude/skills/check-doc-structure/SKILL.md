@@ -127,5 +127,9 @@ End with a per-doc-family verdict.
   for confirmation rather than treating them as mechanical fixes.
 - Pair this with [[check-doc-expressions]] for prose quality and with
   [[check-doc-consistency]] for cross-document truth alignment.
+- `STYLE_GUIDE.md`'s "Keep" list (frontmatter, tables/diagrams/code
+  blocks, cross-links) overlaps this skill's scope — if a prose-style
+  pass under [[check-doc-expressions]] or [[fix-docs]] touched one of
+  those, re-run this skill on the page.
 - If a generated doc or a site template is involved, verify the generator
   or template separately before patching the rendered page.

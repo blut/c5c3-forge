@@ -63,7 +63,10 @@ table in `docs/contributing/guide-conventions.md` lists them per devstack.
 Standalone differences go in the terminal
 `## Standalone Keystone, without a ControlPlane` section (modeled on
 `docs/guides/end-to-end-sso.md`); never interleave the two naming worlds
-in the primary walkthrough.
+in the primary walkthrough. Write the prose to `STYLE_GUIDE.md`: vary
+sentence length, keep em-dashes and italics inside its budget, and
+show a step's soundness with a linked command or condition name rather
+than announcing it as "simple" or "robust".
 
 ### 5. Wire the Tested by section
 
@@ -170,3 +173,6 @@ guide side and the convention side:
   in a header note).
 - Pair with [[check-doc-drift]] after guide edits — it audits the wider
   docs surface against the implementation.
+- Pair with [[check-doc-expressions]] for a `STYLE_GUIDE.md` budget pass
+  once the body is drafted; this skill's step 4 only asks for the style
+  while writing, not a count-and-fix audit.

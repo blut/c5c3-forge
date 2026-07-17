@@ -40,7 +40,16 @@ the quick-start pages"), filter to that before classifying.
   duplicate section, or unexplained-reference gap where the correct
   text is directly derivable from code, config, or a sibling doc. The
   finding's `Fix:` hint already states the resolution, or it's a single
-  unambiguous edit.
+  unambiguous edit. A `STYLE_GUIDE.md` budget finding from
+  [[check-doc-expressions]] step 3 is also mechanical: excess em-dashes
+  or italics get cut per the guide's Do example, a second antithesis on
+  a page becomes a plain statement, a repeated aphorism/callout keeps
+  one copy, a bare quality label ("robust", "clean") is replaced with
+  the concrete fact it stood in for, retired filler vocabulary is
+  reworded or (for `precisely`/`exactly`) deleted outright, and a
+  meta-signposting sentence is deleted. Splitting a long sentence at
+  its colon or semicolon is mechanical only if the split doesn't change
+  what the sentence claims — otherwise treat it as a judgment call.
 - **Judgment call** — page renames or moves, tone/marketing-language
   rewrites, tutorial-family reorganization, condensing a paragraph,
   anything the audits tagged "needs judgment." The right answer depends
@@ -70,6 +79,10 @@ reversible-but-noisy action worth a quick check-in, not a silent edit.
 - When condensing or rewording prose, preserve any warnings, exceptions,
   or version-specific caveats the original sentence carried — cutting
   marketing fluff should not also cut the caveat sitting next to it.
+- When applying a `STYLE_GUIDE.md` fix, leave frontmatter, tables,
+  diagrams, code blocks, and cross-links untouched — the guide's "Keep"
+  list protects them from style sanding even when the surrounding prose
+  is being cut down.
 
 ### 4. Re-verify
 
@@ -80,6 +93,13 @@ to just the touched pages ("quick" depth), to confirm the fix didn't:
 - leave a sibling page's copy of the same fact now out of sync
   (consistency)
 - swap one wording problem for another (expressions)
+
+For any touched page, also run `STYLE_GUIDE.md`'s own pre-commit check
+(em-dash/italic counts back under budget, no second antithesis, no
+unbacked quality label, no sentence too long to read in one breath, no
+leftover meta-signposting) — this is the same check as
+[[check-doc-expressions]] step 3, so a quick-depth re-run of that skill
+covers it.
 
 ### 5. Report
 
@@ -99,3 +119,6 @@ findings were grouped. Reference the original finding ID
 - Pair with [[check-doc-consistency]], [[check-doc-expressions]], and
   [[check-doc-structure]], which generate the findings this skill
   consumes.
+- For any prose rewrite, `STYLE_GUIDE.md` is the contract: its Do/Don't
+  pairs are the default rewrite pattern for a given device, and its
+  "Keep" list is the boundary this skill must not cross.

@@ -2,10 +2,11 @@
 name: check-doc-expressions
 description: >-
   Audit documentation prose quality for forge docs — sentence clarity,
-  active voice, terminology, ambiguity, tone, jargon control, and the
-  readability of command examples and code-adjacent explanations. Use
-  when asked to improve writing quality, after drafting or editing prose,
-  or when a page reads correctly but not clearly.
+  active voice, terminology, ambiguity, tone, jargon control, adherence
+  to STYLE_GUIDE.md's rhetorical-device budget, and the readability of
+  command examples and code-adjacent explanations. Use when asked to
+  improve writing quality, after drafting or editing prose, or when a
+  page reads correctly but not clearly.
 ---
 
 # Check documentation expressions
@@ -28,7 +29,8 @@ prose is muddy or inconsistent.
 | Area | What to check | Source of truth |
 |---|---|---|
 | Sentence clarity | short, direct sentences; one idea per sentence; no dangling references | the intended reader outcome |
-| Voice and tone | active voice, concrete verbs, minimal hedging; no marketing or aspirational phrasing ("the shortest path to…", "seamlessly") in operational docs | the doc family style used elsewhere in the repo |
+| Voice and tone | active voice, concrete verbs, minimal hedging; no marketing or aspirational phrasing ("the shortest path to…", "seamlessly") in operational docs | `STYLE_GUIDE.md` and the doc family style used elsewhere in the repo |
+| Rhetorical-device budget | em-dash, italic emphasis, antithesis ("not X, but Y"), aphoristic one-liner closers, and `:::` callouts stay within the per-1,000-word limits; filler vocabulary and meta-signposting are cut | `STYLE_GUIDE.md`'s budget table and Do/Don't list |
 | Terminology | one term per concept, no accidental synonyms | the repo glossary and established usage |
 | Command examples | commands are complete, ordered, and copyable | the real workflow the docs describe |
 | Explanatory text | definitions appear before specialized terms are used | the implementation or process being documented |
@@ -75,7 +77,34 @@ Check whether each paragraph does the following:
 - gives each step of a multi-step walkthrough comparable depth — flag a
   step that is a bare command next to siblings with full explanations
 
-### 3. Inspect code-adjacent text
+### 3. Check the style-guide budget
+
+`STYLE_GUIDE.md` sets checkable limits per ~1,000 words: at most 2
+em-dashes, 4 italic spans, 1 antithesis ("not X, but Y" / "rather
+than"), 1 aphoristic one-liner close, and 1–2 `:::` callout boxes.
+Count each device against the page and flag:
+
+- More em-dashes or italic spans than the budget allows.
+- A second "not X, but Y" construction on the same page.
+- A quality self-label ("robust", "clean", "battle-tested", "seamless")
+  with nothing concrete backing it — the fix replaces the label with
+  the fact it was standing in for (a linked test, a condition name, a
+  command), it doesn't just delete the sentence.
+- A paragraph that closes on a slogan *and* a `:::` box repeating it.
+- Filler vocabulary past its retirement point (`load-bearing`,
+  `by construction`, `structural rather than aspirational`,
+  `first-class`, `precisely`, `exactly`, `deliberately`) — `precisely`
+  and `exactly` are cut outright rather than replaced.
+- A sentence with three or more subordinate clauses that can't be read
+  aloud in one breath — the fix splits it at a colon or semicolon.
+- A sentence that only previews the next one ("The section below
+  covers…") — the fix deletes it; the heading already orients the
+  reader.
+
+This is a mechanical count, separate from the meaning-level read in
+step 2 — do both passes.
+
+### 4. Inspect code-adjacent text
 
 For commands, YAML, shell snippets, and API examples:
 
@@ -91,7 +120,7 @@ For commands, YAML, shell snippets, and API examples:
   assumptions (network access, resource limits) are stated up front as
   prerequisites rather than discovered by trial and error
 
-### 4. Report
+### 5. Report
 
 Produce findings as a flat list, most severe first, one line each:
 
@@ -106,9 +135,13 @@ Group by severity:
   prerequisite is wrong (not just unclear) and follows it fails.
 - **MEDIUM** — ambiguous wording, unexplained jargon/reference, repeated
   terms for one concept, missing failure/retry guidance, or prose that
-  obscures the actual workflow.
+  obscures the actual workflow; a style-guide budget blown so far past
+  the limit (e.g. the machine-written claim → contrast → em-dash → tidy
+  one-liner pattern repeating every paragraph) that it degrades
+  readability rather than just drifting from house style.
 - **LOW** — awkward phrasing, overly long sentences, depth-parity
-  drift, or style drift that does not change the meaning.
+  drift, or a step 3 style-guide budget item over its per-1,000-word
+  limit without otherwise changing the meaning.
 
 End with a short verdict for the page or doc set.
 
@@ -116,6 +149,8 @@ End with a short verdict for the page or doc set.
 
 - This skill is read-only; do not rewrite the page until the wording
   issue has been localized. Hand findings to [[fix-docs]] to apply them.
+  Step 3 findings map to STYLE_GUIDE.md's own Do/Don't pairs, so
+  fix-docs can usually treat them as mechanical.
 - Pair this with [[check-doc-structure]] so the page is both readable
   and well organized, and with [[check-doc-consistency]] so the prose
   matches the rest of the docs corpus.
