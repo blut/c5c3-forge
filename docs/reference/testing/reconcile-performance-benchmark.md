@@ -71,7 +71,7 @@ For each count the script prints a block like:
 
 Compare the end-to-end p95 against the steady-state SLO (p95 ≤ 2s) and the
 per-sub-reconciler p95 against the ≤ 300ms target. A `nan` means no reconciles
-were sampled in the window — increase `SETTLE_SECONDS` or check that the CRs are
+were sampled in the window: increase `SETTLE_SECONDS` or check that the CRs are
 actually reconciling.
 
 ## Why this is not a CI job

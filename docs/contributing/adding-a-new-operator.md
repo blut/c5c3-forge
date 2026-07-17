@@ -11,8 +11,8 @@ SPDX-License-Identifier: Apache-2.0
 
 This checklist captures everything a new service operator (e.g. Horizon)
 touches beyond its own `operators/<op>/` module. The generic controller
-scaffolding lives in `internal/common` — a new operator consumes it instead of
-copying the keystone implementation — and the remainder is a finite list of
+scaffolding lives in `internal/common` (a new operator consumes it instead of
+copying the keystone implementation), and the remainder is a finite list of
 build/CI/config seams that are still enumerated per operator.
 
 ## Shared packages to consume
@@ -85,7 +85,7 @@ bottom when scaffolding `operators/<op>/`:
 ## Design decisions the shared scaffolding encodes
 
 Two cross-service decisions were settled when the scaffolding was extracted;
-new operators build on them rather than reopening them:
+new operators build on them instead of reopening them:
 
 - **Cross-service endpoint discovery is convention-based.** Consumers derive a
   service URL from the naming convention (`internal/common/naming`):
@@ -93,11 +93,11 @@ new operators build on them rather than reopening them:
   `SubResourceName(<cr name>)`. Keystone publishes `Status.Endpoint` for human
   consumers only; no machine consumer reads it, and no status-based resolve
   helper or cross-CR watch exists. If a new operator needs endpoint shapes the
-  convention cannot express, build that helper then — not preemptively.
+  convention cannot express, build that helper then, not preemptively.
 - **Non-INI configuration rendering gets its own package.**
   `internal/common/config` renders oslo INI only and stays that way. A service
   that renders Python settings (e.g. Horizon's Django `local_settings.py`)
-  gets a separate shared renderer package rather than bolting Python emission
-  onto the INI renderer. `internal/common/pysettings` now exists — implemented
+  gets a separate shared renderer package instead of bolting Python emission
+  onto the INI renderer. `internal/common/pysettings` now exists: implemented
   with its first consumer, the horizon-operator, which is also the checklist's
   first full second-operator walk-through.

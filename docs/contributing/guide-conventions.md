@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 The how-to guides under `docs/guides/` all lead an operator through a task on a
 running cluster. To keep them copy-pasteable, every guide must agree on the same
 few structural rules. Without them each guide re-derives its structure from a
-neighbour and inherits that neighbour's inconsistencies — most visibly, example
+neighbour and inherits that neighbour's inconsistencies: most visibly, example
 names that name a resource the reader's cluster never created.
 
 This page is the contract. New guides follow it from the start; existing guides
@@ -63,7 +63,7 @@ names `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make depl
 ## ControlPlane-first naming
 
 The primary path of a guide uses the resource names its declared devstack
-actually produces — never a placeholder name that no tutorial creates. A reader
+actually produces: never a placeholder name that no tutorial creates. A reader
 on that devstack must be able to copy a command and have it hit a resource that
 exists.
 
@@ -86,7 +86,7 @@ On a ControlPlane devstack the Keystone and Horizon CRs are **projected** by the
 ControlPlane operator; editing them by hand is reverted on the next reconcile.
 A guide sets a knob on the `ControlPlane` CR, and lets the operator project it
 down. A knob the `ControlPlane` CRD does not expose is documented as
-standalone-only — in the guide's `## Standalone Keystone, without a ControlPlane`
+standalone-only: in the guide's `## Standalone Keystone, without a ControlPlane`
 section, applied to a Keystone CR the reader owns.
 
 ## Every guide is testable
@@ -118,9 +118,9 @@ around the CR document in the fixture:
 ```
 
 The fixture and the walkthrough serve different masters, so they carry different
-names. A suite fixture is **isolation-named** — a distinct CR name, its own
-logical database, `deletionPolicy: Delete`, dev-tag image pins — so the suite
-runs safely in the parallel suite pool. The walkthrough is **devstack-named** —
+names. A suite fixture is **isolation-named** (a distinct CR name, its own
+logical database, `deletionPolicy: Delete`, dev-tag image pins) so the suite
+runs safely in the parallel suite pool. The walkthrough is **devstack-named**:
 it uses the resource names the guide's declared devstack actually produces (see
 [ControlPlane-first naming](#controlplane-first-naming)), so a reader can copy a
 command and have it hit a resource that exists. Reconcile the two by keeping the

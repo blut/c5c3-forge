@@ -208,7 +208,7 @@ cycles.
 - Uses `client.IgnoreNotFound()` on delete operations, so a ConfigMap deleted between
   the list and delete calls does not cause an error.
 - Calling the function twice with the same state produces the same result.
-- Does not use optimistic locking — concurrent reconcile goroutines may both attempt
+- Does not use optimistic locking: concurrent reconcile goroutines may both attempt
   to delete the same ConfigMap, but `IgnoreNotFound` makes this safe.
 
 **Filtering rules:**
@@ -349,7 +349,7 @@ Creates or updates a Service. Does not report readiness (Services are ready imme
 - Applies the desired Service via `apply.EnsureObject` (Server-Side Apply). The builder
   leaves server-assigned fields (`ClusterIP`, `ClusterIPs`, `IPFamilies`, `NodePort`)
   unset, so the field manager never owns them and the API server keeps the values it
-  assigned — no hand-rolled preservation is needed.
+  assigned: no hand-rolled preservation is needed.
 - Retains a pre-apply `Get` only to fail fast when the caller explicitly sets one of those
   immutable fields to a conflicting value.
 
@@ -410,7 +410,7 @@ exceeded backoffLimit) and its re-run key is unchanged;
   `isJobComplete` helper and permanent failure via `isJobFailed`. A completed
   **or permanently failed** Job whose stored re-run key (the
   `forge.c5c3.io/pod-spec-hash` annotation) no longer matches the desired pod
-  template is deleted (background propagation) and re-created — so a Job that
+  template is deleted (background propagation) and re-created, so a Job that
   failed under a since-fixed spec (new container image, corrected ConfigMap,
   rotated password) re-runs instead of wedging. A permanently failed Job whose
   re-run key is unchanged returns an error wrapping `ErrJobFailed` to prevent
@@ -524,8 +524,8 @@ condition with status `True` (the ESO `ExternalSecretReady` condition type).
 
 - This is a point-in-time check, not a blocking wait. Reconcilers should call it on each
   reconciliation loop and requeue while `ready` is `false`.
-- The separate `exists` return lets callers surface a clearer status —
-  "ExternalSecret not found yet" versus "waiting for ESO to sync" — instead of
+- The separate `exists` return lets callers surface a clearer status:
+  "ExternalSecret not found yet" versus "waiting for ESO to sync", instead of
   collapsing both into a single not-ready signal.
 - Uses the ESO `ExternalSecretReady` condition type constant, not a raw string.
 
@@ -602,9 +602,9 @@ Creates or updates a PushSecret CR with a controller owner reference.
 
 - Applies the desired PushSecret via `apply.EnsureObject` (Server-Side Apply). The field
   manager owns only the fields the builder sets, so the server defaults on `updatePolicy`
-  and `refreshInterval` are preserved and a converged PushSecret is not rewritten — ESO is
+  and `refreshInterval` are preserved and a converged PushSecret is not rewritten: ESO is
   not woken to re-push an unchanged credential.
-- Uses the ESO `v1alpha1` PushSecret API (unstable — see [External CRD Dependencies](#external-crd-dependencies)).
+- Uses the ESO `v1alpha1` PushSecret API (unstable: see [External CRD Dependencies](#external-crd-dependencies)).
 
 ### Per-CR secret store selection
 

@@ -195,12 +195,12 @@ status:
 ### LDAPBackendSpec
 
 Only user-set optional fields are rendered into the per-domain config, so
-upstream keystone defaults apply for everything left unset — with one
-deliberate exception: unless `extraOptions` carries any `user_enabled_*` key,
+upstream keystone defaults apply for everything left unset, with one
+exception: unless `extraOptions` carries any `user_enabled_*` key,
 the projection renders `user_enabled_invert = true` and
 `user_enabled_default = false`, which makes every user read as enabled.
 Directories without an "enabled" concept (plain `inetOrgPerson` /
-`posixAccount` trees — no standard LDAP attribute exists for it) otherwise
+`posixAccount` trees: no standard LDAP attribute exists for it) otherwise
 yield user models without the `enabled` key, and keystone's response-schema
 validation rejects its own reply with HTTP 400 (`'enabled' is a required
 property`) on every user listing. Deployments whose directory does model
@@ -262,7 +262,7 @@ either metadata-driven (`providerMetadataURL`, defaulted to
 explicit (`endpoints`); the two shapes are mutually exclusive (CEL rule plus
 webhook defense-in-depth). The operator fetches the discovery document at
 reconcile time and pre-provisions it into the sidecar's read-only
-`OIDCMetadataDir` — the module cannot self-cache there.
+`OIDCMetadataDir`: the module cannot self-cache there.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -333,7 +333,7 @@ defense-in-depth).
 
 One keystone federation mapping rule: remote assertion matchers plus the
 local objects they map to. The typed shape mirrors keystone's mapping-rule
-JSON one-to-one — the rule grammar is closed, so no free-form escape hatch
+JSON one-to-one: the rule grammar is closed, so no free-form escape hatch
 exists. The camelCase field names map to the snake_case JSON keys:
 
 | CRD field | Keystone mapping JSON key |
@@ -363,7 +363,7 @@ exists. The camelCase field names map to the snake_case JSON keys:
 ### FederationGroupSpec
 
 Declares one local keystone group (created if missing in the backend's
-domain, never mutated afterwards — keystone cascades group deletion with the
+domain, never mutated afterwards; keystone cascades group deletion with the
 domain per the deletion policy) plus the role assignments granting its
 members access.
 
@@ -443,8 +443,8 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 Once `DomainReady`, `FederationObjectsReady`, or `MappingsReady` has reached
 True, the transient-observation reasons (`WaitingForKeystoneAPI`,
 `AdminSecretUnavailable`, `IdentityAPIError`) never demote it back to False:
-they report a failed observation — the API or a credential was temporarily
-unreachable — not a de-provisioning. This matters on every OIDC attach, where
+they report a failed observation (the API or a credential was temporarily
+unreachable), not a de-provisioning. This matters on every OIDC attach, where
 projecting the sidecar rolls the Keystone Deployment and briefly takes the
 API offline: demoting `DomainReady` in that window would de-project the
 backend and re-trigger the same rollout in a loop. Transient failures surface
@@ -459,12 +459,12 @@ finalizer:
 
 1. **De-projection first.** The keystone-side sub-reconciler drops the
    backend's config from the projection (the domains Secret for LDAP, the
-   federation Secret — and with the last OIDC backend, the whole sidecar —
+   federation Secret, and with the last OIDC backend the whole sidecar,
    for OIDC) and rolls the Deployment; the finalizer waits for this so
    keystone never runs with config pointing at a dead domain.
 2. **Federation-object teardown (OIDC).** The protocol, mapping, and
-   identity provider are removed in reverse dependency order —
-   unconditionally, regardless of the domain deletion policy — tolerating
+   identity provider are removed in reverse dependency order
+   (unconditionally, regardless of the domain deletion policy), tolerating
    objects already gone. Declarative groups follow the domain (keystone
    cascades domain contents).
 3. **Deletion policy.** Only for `mode: Manage` + `deletionPolicy: Delete`
@@ -494,7 +494,7 @@ direct-reader List that skips Terminating siblings), the fixed data-key
 contract on the bind/CA Secret references, the
 [`extraOptions` denylist](#extraoptions-denylist), and an INI-injection guard
 that rejects a newline or carriage-return in any rendered value (every typed
-`ldap` field and every `extraOptions` value) — such a character would inject
+`ldap` field and every `extraOptions` value): such a character would inject
 arbitrary `[ldap]` lines through the verbatim config render, defeating the
 `readOnly` forcing and the denylist. The projection re-validates the fully
 assembled `[ldap]` values as the last line of defense: it is the only gate
@@ -530,16 +530,16 @@ IdP-metadata entityID as the last line of defense.
 
 The rejection corpus lives in `tests/e2e/keystone/invalid-identitybackend-cr/`
 (generated from `_generate.py`, guarded by `make verify-invalid-cr-fixtures`);
-the end-to-end LDAP flow — in-suite OpenLDAP fixture, domain provisioning,
-projection, token issuance for an LDAP user, and clean detach — lives in
-`tests/e2e/keystone/ldap-domain-backend/`. The OIDC federation flow —
-in-suite two-realm Keycloak fixture, federation-object provisioning, the
+the end-to-end LDAP flow (in-suite OpenLDAP fixture, domain provisioning,
+projection, token issuance for an LDAP user, and clean detach) lives in
+`tests/e2e/keystone/ldap-domain-backend/`. The OIDC federation flow
+(in-suite two-realm Keycloak fixture, federation-object provisioning, the
 sidecar rollout, the bearer/CLI and browser websso flows, the multi-realm
-proof, and clean detach — lives in `tests/e2e/keystone/oidc-federation/`;
+proof, and clean detach) lives in `tests/e2e/keystone/oidc-federation/`;
 chaos coverage (sidecar container-kill, IdP outage) lives in
-`tests/e2e-chaos/keystone-federation/`. The SAML federation flow — in-suite
+`tests/e2e-chaos/keystone-federation/`. The SAML federation flow (in-suite
 Keycloak SAML realm, federation-object provisioning, the mellon sidecar
-rollout, the SP-metadata export, OIDC/SAML coexistence, and clean detach —
+rollout, the SP-metadata export, OIDC/SAML coexistence, and clean detach)
 lives in `tests/e2e/keystone/saml-federation/`. See
 [Keystone E2E Test Suites](../testing/keystone-e2e-tests.md).
 

@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 The repository ships a Nix flake so that entering the development environment
 yields the same toolchain a CI run gets, pinned to the versions the pipeline
 pins. It is a second, equally complete entry point next to
-`make install-test-deps` — the dependency-installation script and the CI setup
+`make install-test-deps`: the dependency-installation script and the CI setup
 steps are unchanged, and no pipeline behavior depends on the flake.
 
 ```bash
@@ -26,8 +26,8 @@ gitignored `bin/`) at the versions CI uses.
 
 ## What you get
 
-- **Base runtimes** — Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, and a
-  GNU userland — come from the `nixpkgs` revision pinned in `flake.lock`. The
+- **Base runtimes** (Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, and a
+  GNU userland) come from the `nixpkgs` revision pinned in `flake.lock`. The
   GNU userland is deliberate: it makes macOS behave like the Linux-only CI
   runner (for example, `make chainsaw-lint` relies on GNU `xargs`).
 - **Exact CI-pinned tools** are installed by `hack/nix-devshell-hook.sh`, which
@@ -78,7 +78,7 @@ pin them to an exact patch:
   nix --extra-experimental-features 'nix-command flakes' develop
   ```
 
-- **Docker** is deliberately **not** provided by the flake — a running daemon
+- **Docker** is **not** provided by the flake: a running daemon
   cannot be nix-provisioned, and `kind` needs one. Install Docker separately
   (see the [Quick Start (Extended)](../quick-start-extended.md) prerequisites).
 
@@ -90,7 +90,7 @@ tools, tarball downloads for `kustomize`/`chainsaw`/`kind`/`kubectl`/`flux`, the
 the same kind of work CI does per job. Subsequent entries skip anything already
 installed at the pinned version.
 
-If you enter the shell offline, provisioning **degrades loudly** — each tool
+If you enter the shell offline, provisioning **degrades loudly**: each tool
 that could not be installed is listed in a warning summary and the shell still
 opens. Re-run `source hack/nix-devshell-hook.sh` once you are back online.
 
@@ -98,11 +98,11 @@ opens. Re-run `source hack/nix-devshell-hook.sh` once you are back online.
 
 - **Tool pins** are bumped by Renovate in their canonical files (`ci.yaml`, the
   `Makefile`, `hack/install-test-deps.sh`). The devshell re-reads those files on
-  entry, so it self-heals with no flake edit — see
+  entry, so it self-heals with no flake edit; see
   [Dependency Management](./dependency-management.md).
 - **`flake.lock`** (the `nixpkgs` revision) is maintained by Renovate's native
   `nix` manager, which opens a grouped weekly re-lock PR for review. The
-  `nixos-unstable` re-lock is not automerged — a human confirms the base-runtime
+  `nixos-unstable` re-lock is not automerged: a human confirms the base-runtime
   bump the devshell inherits.
 
 ## Optional: direnv

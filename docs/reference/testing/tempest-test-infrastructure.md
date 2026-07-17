@@ -86,7 +86,7 @@ KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/<release>/test-refs.
 Both `ci.yaml` and `build-images.yaml` use the same resolution pattern. A null or empty
 result from `yq` causes the CI step to fail with a descriptive error.
 
-To update versions, edit `test-refs.yaml` — no Dockerfile changes are needed.
+To update versions, edit `test-refs.yaml`: no Dockerfile changes are needed.
 
 ## Container Image
 
@@ -236,7 +236,7 @@ The two phases run **sequentially**; within each phase `stestr` runs at
 
 Each runner enforces that every non-comment, non-empty line in
 `include-tests.txt` lands in exactly one phase. A line with any other prefix
-causes the runner to abort with a clear error — this guards against silent
+causes the runner to abort with a clear error: this guards against silent
 drops when new include patterns are added. Both phases must be non-empty.
 
 **Why sequential.** Keystone re-resolves the list of enabled federation
@@ -247,13 +247,13 @@ issues a token via POST, validates it via GET, and asserts the two response
 bodies are equal. When `keystone_tempest_plugin.tests.api.identity.v3.
 test_service_providers.ServiceProvidersTest` runs concurrently on another
 stestr worker, its per-test `addCleanup` deletes the service provider it
-created — and if that cleanup lands in the ~20 ms window between
+created: if that cleanup lands in the ~20 ms window between
 `test_validate_token`'s POST and GET, the two responses diverge on the
 `service_providers` key and the assertion fails.
 
 Upstream's `openstack/keystone` `keystone-tempest` gate job sets
 `tempest_test_regex: "keystone_tempest_plugin"` and therefore only runs
-`keystone_tempest_plugin.*` tests — the core `tempest.api.identity.*` suite
+`keystone_tempest_plugin.*` tests: the core `tempest.api.identity.*` suite
 (which contains `test_validate_token`) never runs in the same Tempest
 invocation as the service-providers tests, so upstream never observes this
 race. We run both suites for fuller coverage and replicate the isolation by
@@ -308,7 +308,7 @@ infrastructure not available in the CI kind cluster:
 #### Tracking version-coupled RBAC excludes
 
 Unlike the infrastructure excludes above, the RBAC excludes are coupled to a
-specific `keystone-tempest-plugin` version — they exist because the plugin's
+specific `keystone-tempest-plugin` version: they exist because the plugin's
 expected status codes disagree with Keystone's default policies for that
 release. They must not silently outlive their cause. Each RBAC exclude group
 therefore carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:

@@ -82,7 +82,7 @@ permissions:
 `build-base-images`, `build-service-images`, `build-tempest` (for pushing per-platform
 digests) and to `merge-base-images`, `merge-tempest-image`, `merge-service-images` (for
 pushing manifest lists).
-`id-token: write` enables Sigstore keyless OIDC signing — the GitHub Actions runner
+`id-token: write` enables Sigstore keyless OIDC signing: the GitHub Actions runner
 requests a short-lived OIDC token bound to the workflow identity, which Sigstore uses to
 sign the attestation without managing keys. `attestations: write` grants
 access to the GitHub Attestations API for storing signed attestations.
@@ -92,7 +92,7 @@ merge jobs (`merge-base-images`, `merge-tempest-image`, `merge-service-images`) 
 `build-service-images` and `build-tempest` (for PR-only Grype scans via
 `supply-chain-attest` with `scan-mode: image`). The verification jobs
 (`verify-base-images`, `verify-service-images`) do **not** receive `id-token`,
-`attestations`, or `security-events` permissions — they only need `contents: read` (for
+`attestations`, or `security-events` permissions: they only need `contents: read` (for
 checkout and test scripts) and `packages: read` (for pulling images from GHCR), following
 the principle of least privilege.
 
@@ -299,11 +299,11 @@ previously duplicated three-step setup sequence.
 
 ### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
 
-The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
+The Apache federation reverse-proxy sidecar for Keystone: `mod_auth_openidc`
 (OIDC) and `mod_auth_mellon` (SAML) in one image
 (`images/keystone-federation-proxy/`, single-stage `ubuntu:noble` + distro
 `apache2` + `libapache2-mod-auth-openidc` + `libapache2-mod-auth-mellon`). The
-image is release-independent — no OpenStack code — so the job pair follows
+image is release-independent (no OpenStack code), so the job pair follows
 the base-image shape rather than the release matrix: a two-platform build
 job that depends only on `lint-dockerfiles` and `prepare` (PR mode loads
 the amd64 image locally for the inline Grype scan and the
@@ -316,7 +316,7 @@ supply-chain pipeline (SBOM, attestation, cosign).
 
 Builds the two base images (`python-base` and `venv-builder`) per platform on native
 runners and pushes each single-arch image by digest. These must always be
-pushed — even on PRs — because downstream service builds reference them via
+pushed (even on PRs) because downstream service builds reference them via
 `docker-image://` URIs, which require registry availability. The multi-arch manifest list
 is assembled by the subsequent `merge-base-images` job.
 
@@ -549,7 +549,7 @@ skips known-failing tests via `stestr run --exclude-list`.
 
 :::
 
-This job runs in parallel with `build-service-images` — both depend on
+This job runs in parallel with `build-service-images`: both depend on
 `merge-base-images` and `verify-base-images`, but not on each other. The
 `verify-service-images` job gates on both.
 
@@ -716,7 +716,7 @@ The workflow behaves differently depending on the trigger event:
 
 **Why base images are always pushed:** Service Dockerfiles reference base images via
 `docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
-referenced image to exist in a registry — local images are not sufficient. Pushing
+referenced image to exist in a registry: local images are not sufficient. Pushing
 small base images on every PR is a deliberate trade-off to keep Dockerfiles
 registry-independent.
 
@@ -819,14 +819,14 @@ events, merge jobs use the default `scan-mode: sbom` for the full pipeline.
 
 On pull requests:
 
-- No SBOMs are generated or attested — `scan-mode: image` skips all SBOM/attestation steps.
-- No OIDC token requests occur — SBOM/attestation steps are skipped so `id-token: write` is not exercised.
+- No SBOMs are generated or attested: `scan-mode: image` skips all SBOM/attestation steps.
+- No OIDC token requests occur: SBOM/attestation steps are skipped so `id-token: write` is not exercised.
 - No attestations are created for ephemeral PR builds.
 - PR CI time is not increased by SBOM/attestation steps.
 
 Base images are always pushed to GHCR (even on PRs) because downstream service builds
 reference them via `docker-image://` URIs. However, SBOM generation and attestation for
-base images are still skipped on PRs — the composite action's `scan-mode` guard applies
+base images are still skipped on PRs: the composite action's `scan-mode` guard applies
 uniformly.
 
 ### Required Permissions
@@ -925,7 +925,7 @@ action:
 The `supply-chain-attest` composite action skips cosign signing in `image` mode. On
 pull requests:
 
-- No images are signed — `scan-mode: image` skips all signing steps.
+- No images are signed: `scan-mode: image` skips all signing steps.
 - No OIDC token requests occur for signing.
 - The `id-token: write` permission (shared with SBOM attestation) is not exercised.
 
@@ -1005,8 +1005,8 @@ action:
 ### Scan Input: PR vs Push
 
 The `supply-chain-attest` composite action uses its `scan-mode` input to select the
-scan strategy. Internally, the action has two mutually exclusive Grype scan steps — one
-for `sbom` mode and one for `image` mode — because `anchore/scan-action` documents
+scan strategy. Internally, the action has two mutually exclusive Grype scan steps (one
+for `sbom` mode and one for `image` mode) because `anchore/scan-action` documents
 `sbom` and `image` as mutually exclusive inputs:
 
 | `scan-mode` | Grype input | Source |
@@ -1035,7 +1035,7 @@ All Grype scan steps use `severity-cutoff: high` with `fail-build: false`:
 
 A `.grype.yaml` configuration file at the repository root allows suppression of
 known-accepted CVEs. Grype automatically reads this file from the working
-directory (default behavior — no explicit configuration needed).
+directory (default behavior, no explicit configuration needed).
 
 ```yaml
 # .grype.yaml — add entries to suppress false positives
@@ -1117,7 +1117,7 @@ present, regardless of whether the image is built locally or in CI:
 
 In `python-base` and `venv-builder`, the `LABEL` instruction is placed after the last
 `RUN` instruction. In `keystone`, the `LABEL` is placed in Stage 2 (runtime, `FROM
-python-base`) before the `USER` instruction — Stage 1 (build) labels are discarded by
+python-base`) before the `USER` instruction: Stage 1 (build) labels are discarded by
 Docker's multi-stage build process.
 
 ### CI Metadata Action
@@ -1203,9 +1203,9 @@ To add a new service (e.g., `nova`) to the build matrix:
 
 Add a Dockerfile at `images/<service>/Dockerfile` following the two-stage pattern in
 `images/keystone/Dockerfile`. The Dockerfile must use named build contexts
-(`python-base`, `venv-builder`, `<service>`, `upper-constraints`) — not hardcoded paths.
+(`python-base`, `venv-builder`, `<service>`, `upper-constraints`), not hardcoded paths.
 Include a `LABEL` instruction in the runtime stage with OCI annotations (title,
-description, licenses, vendor) — see [OCI Annotations](#oci-annotations).
+description, licenses, vendor); see [OCI Annotations](#oci-annotations).
 
 ### 2. Add the source ref
 
@@ -1220,7 +1220,7 @@ nova: "31.0.0"        # ← new entry
 
 Add the service to `releases/<release>/extra-packages.yaml` with its Python extras,
 additional pip packages, and runtime system packages. This file is the source of truth
-for build arguments `PIP_EXTRAS`, `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` — the
+for build arguments `PIP_EXTRAS`, `PIP_PACKAGES`, and `EXTRA_APT_PACKAGES`: the
 service will not build without an entry here.
 
 ```yaml
@@ -1236,7 +1236,7 @@ nova:
 
 The `generate-matrix` job automatically discovers all services from `source-refs.yaml`
 in each `releases/*/` directory. Adding the service to `source-refs.yaml` (step 2) is
-sufficient — no manual workflow matrix changes are needed. The job produces
+sufficient: no manual workflow matrix changes are needed. The job produces
 `service × release` matrices consumed by `build-service-images`, `test-service-images`,
 `merge-service-images`, and `verify-service-images`.
 
@@ -1258,7 +1258,7 @@ If the service has upstream unit tests that cannot pass in CI (environment-depen
 flaky, or infrastructure-requiring tests), create an exclusion file at
 `releases/<release>/test-excludes/<service>.txt`. The file uses stestr exclude-list
 format: one regex pattern per line, `#` for comments, blank lines allowed. The
-`test-service-images` job picks up the file automatically when present — no workflow
+`test-service-images` job picks up the file automatically when present: no workflow
 changes are needed.
 
 The tag derivation, build context resolution, source checkout (via
@@ -1288,8 +1288,8 @@ releases/2026.1/
 └── upper-constraints.txt     # From openstack/requirements stable/2026.1
 ```
 
-`extra-packages.yaml` is required — the workflow reads it to resolve `PIP_EXTRAS`,
-`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required —
+`extra-packages.yaml` is required: the workflow reads it to resolve `PIP_EXTRAS`,
+`PIP_PACKAGES`, and `EXTRA_APT_PACKAGES` build arguments. `test-refs.yaml` is required:
 the `build-tempest` job reads it to resolve `TEMPEST_VERSION` and
 `KEYSTONE_TEMPEST_PLUGIN_VERSION` build arguments. See
 [Container Images — extra-packages.yaml](container-images.md#extra-packagesyaml) for the
@@ -1298,7 +1298,7 @@ YAML schema and `releases/2025.2/extra-packages.yaml` for a working example.
 ### 2. Verify matrix discovery
 
 The `generate-matrix` job automatically discovers all releases from `releases/*/`
-directories. Creating the release directory in step 1 is sufficient — no manual workflow
+directories. Creating the release directory in step 1 is sufficient: no manual workflow
 changes are needed. The job produces `service × release` matrices for all downstream jobs
 (`build-service-images`, `merge-service-images`, `test-service-images`,
 `verify-service-images`) and `release`-only matrices for Tempest pipeline jobs

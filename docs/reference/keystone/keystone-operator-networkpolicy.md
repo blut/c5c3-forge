@@ -73,7 +73,7 @@ All rules below are emitted on a single `NetworkPolicy` object named after
 
 > **One rule, N×M tuples.** The kube-apiserver rule emits a **single**
 > `egress` entry with all CIDRs under `to:` and all ports under `ports:`. By
-> NetworkPolicy semantics this permits every (cidr, port) combination — one
+> NetworkPolicy semantics this permits every (cidr, port) combination: one
 > rule with three CIDRs and two ports covers six tuples. Do not expand the
 > list into one rule per tuple.
 
@@ -90,8 +90,8 @@ The operator exposes liveness and readiness probes on TCP 8081. These probes
 are called by the **kubelet** from the node's host network namespace, which
 is not subject to `NetworkPolicy` in the standard CNIs
 ([Calico](https://docs.tigera.io/calico/latest/network-policy/policy-rules/kubernetes),
-[Cilium](https://docs.cilium.io/en/stable/network/kubernetes/policy/), Antrea)
-— see the upstream
+[Cilium](https://docs.cilium.io/en/stable/network/kubernetes/policy/), Antrea);
+see the upstream
 [Kubernetes NetworkPolicy "what you can't do" list](https://kubernetes.io/docs/concepts/services-networking/network-policies/#what-you-can-t-do-with-network-policies-at-least-not-yet).
 Therefore the template renders **no ingress rule for 8081**, and adding one
 is unnecessary. Probes continue to work with the default-deny

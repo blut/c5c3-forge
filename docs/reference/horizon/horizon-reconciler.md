@@ -10,7 +10,7 @@ The Horizon controller runs the shared table-driven pipeline
 instrumented under the `horizon_operator` metrics prefix
 (`horizon_operator_reconcile_duration_seconds`,
 `horizon_operator_reconcile_errors_total`), and the first step to return a
-non-zero result or an error short-circuits the chain — conditions and the
+non-zero result or an error short-circuits the chain: conditions and the
 requeue are persisted on every exit path.
 
 ## Pipeline
@@ -70,8 +70,8 @@ all seven sub-conditions are `True`:
 
 Beyond the owned resources, the controller watches Secrets (indexed reverse
 lookup on `spec.secretKeyRef.name`, plus group-scoped owner references) and
-both OpenBao-backed store kinds — a cluster-scoped `ClusterSecretStore` and a
-namespaced `SecretStore` — each bound to `storeToHorizonMapper` (the shared
+both OpenBao-backed store kinds (a cluster-scoped `ClusterSecretStore` and a
+namespaced `SecretStore`) each bound to `storeToHorizonMapper` (the shared
 `watch.StoreRefFanOut`), which enqueues only the Horizon CRs whose effective
 `spec.secretStoreRef` resolves to the changed store, so upstream
 credential and backend changes retrigger reconciliation without waiting for
@@ -87,7 +87,7 @@ crashing the controller.
 (`webSSOSettings` / `multiDomainSettings` in `reconcile_config.go`).
 
 A **nil or disabled** block emits nothing at all, so a CR that never opts into
-federated login renders byte-identically to the pre-websso operator — the same
+federated login renders byte-identically to the pre-websso operator: the same
 convention the Keystone reconciler uses for a nil federation projection. Empty
 optional settings are omitted rather than rendered as empty values: an empty
 `WEBSSO_IDP_MAPPING` dict or `WEBSSO_KEYSTONE_URL` string would each override an

@@ -51,7 +51,7 @@ exports `controller_runtime_reconcile_time_seconds` out of the box for
 every controller, keyed by the `controller` label (`keystone` for this
 operator). Unlike `keystone_operator_reconcile_duration_seconds`, which
 samples only the sub-reconciler functions, this histogram wraps the whole
-`Reconcile` call — orchestration, the status update, and watch handling —
+`Reconcile` call (orchestration, the status update, and watch handling),
 so it is the signal to use for end-to-end reconcile-latency SLOs.
 
 ---
@@ -68,9 +68,9 @@ Wall-clock duration of a single sub-reconciler invocation in seconds.
 | Call site | `instrumentSubReconciler` in `operators/keystone/internal/controller/instrumentation.go` |
 
 **Label cardinality.** The `sub_reconciler` value is drawn from a closed
-set of 16 strings — the keys of `subReconcilerConditionTypes` — so the
+set of 16 strings (the keys of `subReconcilerConditionTypes`), so the
 series count is bounded regardless of how many Keystone CRs exist. The
-metric deliberately omits a `keystone`/`namespace` label to keep
+metric omits a `keystone`/`namespace` label to keep
 cardinality fleet-independent; per-CR attribution is
 available via logs.
 
@@ -135,7 +135,7 @@ at reconcile time.
 
 **`admin-password` caveat.** For `key_type="admin-password"` the gauge
 measures age since the operator committed the rotated password to its
-push-source Secret — not since the password went live. The new password
+push-source Secret: not since the password went live. The new password
 becomes live only after ESO mirrors it to OpenBao, the `keystone-admin`
 ExternalSecret syncs it back, and bootstrap re-runs (~1h+). The gauge
 therefore under-reports time-since-live for `admin-password` relative to
@@ -149,8 +149,8 @@ production Secret on every successful apply, so the timestamp is durable
 across the inter-rotation steady state and the gauge value (recomputed
 as `time.Since(completedAt)` on every reconcile) tracks wall-clock age
 correctly even after the staging Secret has been deleted. If the
-production Secret has no annotation yet — i.e. the very-first rotation
-has not been applied — the lookup falls back to the staging Secret to
+production Secret has no annotation yet (i.e. the very-first rotation
+has not been applied), the lookup falls back to the staging Secret to
 cover the post-CronJob-PATCH/pre-apply window.
 
 **When the gauge is NOT set.** Both lookups skip the gauge on absent or
@@ -196,7 +196,7 @@ DB-related Job the operator runs against the Keystone CR:
 - `<keystone>-db-expand` / `-db-migrate` / `-db-contract` — the three
   phases of the expand-migrate-contract upgrade flow.
 
-This deliberate aggregation keeps the dashboard panel and failure-rate
+This aggregation keeps the dashboard panel and failure-rate
 alerts populated during upgrades. The counter does
 NOT carry a per-phase label; use the matching `DatabaseReady` condition
 reasons (`DBSyncFailed`, `ExpandFailed`, `MigrateFailed`, `ContractFailed`,

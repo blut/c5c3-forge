@@ -18,13 +18,13 @@ deployment automation, see
 
 ## Overview
 
-The test suites cover the full reconciler lifecycle — from initial deployment through
+The test suites cover the full reconciler lifecycle: from initial deployment through
 scaling, key rotation, image upgrades, cross-release upgrades, and deletion cleanup. Each
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
 `tests/e2e/keystone/` currently holds **47 suites** and is the canonical
-inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
+inventory; the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
 
@@ -314,7 +314,7 @@ contains the custom filter name in the pipeline definition and the filter factor
 
 **File:** `tests/e2e/keystone/brownfield-database/chainsaw-test.yaml`
 
-**Purpose:** Validates brownfield database support — using an explicit `database.host`
+**Purpose:** Validates brownfield database support: using an explicit `database.host`
 without `clusterRef`. Verifies no MariaDB CRs (Database, User, Grant) are created, the
 generated `keystone.conf` connection string contains the explicit host, and the
 reconciliation completes to Ready=True.
@@ -428,7 +428,7 @@ Service status, CronJob status, ConfigMap list, pod logs, and namespace events.
 **Design notes:**
 
 - Both CRs share `secretRef: keystone-db` and `adminPasswordSecretRef: keystone-admin`
-  to exercise the `secretToKeystoneMapper` under resource contention — the mapper must
+  to exercise the `secretToKeystoneMapper` under resource contention: the mapper must
   enqueue both CRs when the shared Secret changes without causing cross-CR interference.
 - Each CR uses a unique database name (`keystone_concurrent_a`, `keystone_concurrent_b`)
   to avoid MariaDB conflicts while sharing the same `clusterRef`.
@@ -611,18 +611,18 @@ patching with a valid class sets it; patching with empty string removes it.
 
 **Fixtures:** `00-keystone-cr.yaml`
 
-**Source files contributing managed kinds.** Step 3 is the tracked counterpart of these files — a reviewer adding a new managed kind in any of them MUST extend the iteration list in Step 3, otherwise the ownership invariant can regress unnoticed:
+**Source files contributing managed kinds.** Step 3 is the tracked counterpart of these files: a reviewer adding a new managed kind in any of them MUST extend the iteration list in Step 3, otherwise the ownership invariant can regress unnoticed:
 
 - `operators/keystone/internal/controller/reconcile_deployment.go` — Deployment, Service, PodDisruptionBudget
 - `operators/keystone/internal/controller/reconcile_fernet.go` — `*-fernet-keys` Secret, `*-fernet-rotate-script` ConfigMap family, `*-fernet-rotate` ServiceAccount/Role/RoleBinding/CronJob, `*-fernet-keys-backup` PushSecret
 - `operators/keystone/internal/controller/reconcile_credential.go` — `*-credential-keys` Secret, `*-credential-rotate-script` ConfigMap family, `*-credential-rotate` ServiceAccount/Role/RoleBinding/CronJob, `*-credential-keys-backup` PushSecret
-- `operators/keystone/internal/controller/reconcile_trustflush.go` — `*-trust-flush` CronJob (always materialised — the defaulting webhook at `operators/keystone/api/v1alpha1/keystone_webhook.go` populates `spec.trustFlush` whenever unset)
+- `operators/keystone/internal/controller/reconcile_trustflush.go` — `*-trust-flush` CronJob (always materialised: the defaulting webhook at `operators/keystone/api/v1alpha1/keystone_webhook.go` populates `spec.trustFlush` whenever unset)
 - `operators/keystone/internal/controller/reconcile_database.go` — MariaDB `Database`, `User`, and `Grant` CRs in managed mode (created via `database.EnsureDatabase` / `database.EnsureDatabaseUser` whenever `spec.database.clusterRef` is set, as the fixture does)
 - `operators/keystone/internal/controller/reconcile_dbconnection_secret.go` — `*-db-connection` Secret
 - `operators/keystone/internal/controller/reconcile_config.go` + `internal/common/config/config.go` (`CreateImmutableConfigMap`) — `*-config` ConfigMap family carrying the `forge.c5c3.io/config-base` label and `Immutable: true`
-- `operators/keystone/internal/controller/reconcile_httproute.go` — HTTPRoute (only when `spec.gateway` is set — out of scope for this suite)
-- `operators/keystone/internal/controller/reconcile_networkpolicy.go` — NetworkPolicy (only when `spec.networkPolicy` is set — out of scope)
-- `operators/keystone/internal/controller/reconcile_hpa.go` — HorizontalPodAutoscaler (only when `spec.autoscaling` is set — out of scope)
+- `operators/keystone/internal/controller/reconcile_httproute.go` — HTTPRoute (only when `spec.gateway` is set; out of scope for this suite)
+- `operators/keystone/internal/controller/reconcile_networkpolicy.go` — NetworkPolicy (only when `spec.networkPolicy` is set; out of scope)
+- `operators/keystone/internal/controller/reconcile_hpa.go` — HorizontalPodAutoscaler (only when `spec.autoscaling` is set; out of scope)
 
 ---
 
@@ -654,13 +654,13 @@ an empty slice explicitly disables all constraints.
 
 **File:** `tests/e2e/keystone/pod-security-restricted/chainsaw-test.yaml`
 
-**Purpose:** Validates that the Keystone reconciler admits its full workload — API
+**Purpose:** Validates that the Keystone reconciler admits its full workload (API
 Deployment, bootstrap Job, db-sync Job, policy-validation Job, and the
-fernet-rotation Pod — into a namespace labelled with
+fernet-rotation Pod) into a namespace labelled with
 `pod-security.kubernetes.io/enforce=restricted`. The test asserts Ready=True/AllReady
 within the 5-minute budget AND zero `FailedCreate` events carry the literal violation
 `violates PodSecurity "restricted:latest"`. This is the executable regression net for
-any future reconciler that forgets `restrictedSecurityContext()` — a unit-level test
+any future reconciler that forgets `restrictedSecurityContext()`: a unit-level test
 exists in `security_context_test.go`, but only this E2E proves the helper is wired
 into every Pod-creating reconciler call site.
 
@@ -680,7 +680,7 @@ into every Pod-creating reconciler call site.
 guarded with `|| true` so a missing resource never short-circuits the dump): Pod
 securityContext extracts (`jsonpath`), the last 30 sorted events in the test
 namespace, bootstrap / db-sync / manual-rotate Job pod logs (current AND
-`--previous`), Job describe output, Job status, and — in Step 5 — the full
+`--previous`), Job describe output, Job status, and (in Step 5) the full
 `FailedCreate` event list with `involvedObject.kind/.name` so the offending parent
 Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 [`fernet-rotation`](#fernet-rotation).
@@ -691,7 +691,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   per-test namespace plumbing creates a `chainsaw-*` namespace **without** PSS
   labels. To exercise restricted-profile admission this test must own the
   namespace, so `spec.namespace: ""` **opts out** of Chainsaw's plumbing
-  entirely — Chainsaw creates no namespace, and the test applies the labelled
+  entirely: Chainsaw creates no namespace, and the test applies the labelled
   namespace from `00-namespace.yaml`. This is a **different mechanism** from
   [`namespace-scoped-rbac`](#namespace-scoped-rbac), which sets
   `spec.namespace: openstack` to **pin** to a pre-existing namespace (Chainsaw
@@ -710,7 +710,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 - **PSS label shape: `enforce-version=latest`.** Without the version label the
   apiserver pins to the cluster's current Kubernetes version, which can cause
   spurious failures when the cluster image is upgraded. Pinning to `latest`
-  tracks the newest baseline — the regression net we actually want.
+  tracks the newest baseline: the regression net we actually want.
 - **Manual fernet-rotation Job.** Ready=True alone does not cover the rotation
   Pod (the CronJob has not fired yet). Step 4 triggers a one-shot Job from the
   CronJob template so the rotation Pod's spec is actually admitted under PSS.
@@ -734,7 +734,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   and `openstack/keystone/openstack/standalone/db` values into the namespace's own
   segment. Copying the shared DB value (whose `username` is `keystone`) is what
   keeps the `keystone` MariaDB user's password matching what 00-brownfield-db-setup.yaml
-  and the `brownfield-database` test reconcile onto the same shared user — no SET
+  and the `brownfield-database` test reconcile onto the same shared user: no SET
   PASSWORD race. `openstack/keystone/openstack/standalone/db` is the only static
   DB credential `write-bootstrap-secrets.sh` still seeds: the stage-(a)
   per-ControlPlane path `openstack/keystone/{ns}/{name}/db` is retired since #439
@@ -819,7 +819,7 @@ Verifies that a resource does **not** exist. Used in `deletion-cleanup` and
 
 ### Script Assertion (`script`)
 
-Shell commands for assertions that cannot be expressed declaratively — ConfigMap name
+Shell commands for assertions that cannot be expressed declaratively: ConfigMap name
 patterns (content-hash suffix), API endpoint connectivity, and rotation verification
 (Secret data change, pod UID stability, token validation).
 

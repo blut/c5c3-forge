@@ -26,7 +26,7 @@ ubuntu:noble
 │   └── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
-The `venv-builder` image is used only as a build stage — it never runs in production.
+The `venv-builder` image is used only as a build stage: it never runs in production.
 Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder`
 to install the service, then stage 2 extends `python-base` and copies only the virtualenv
 from stage 1. This ensures the final image contains no build tools.
@@ -65,12 +65,12 @@ The foundational runtime image for all OpenStack service containers.
 
 **User convention:** All service images share a single `openstack` user (UID/GID 42424)
 rather than creating per-service users. This is a deliberate deviation from the architecture
-document — see [Design Deviations](#design-deviations) for rationale.
+document; see [Design Deviations](#design-deviations) for rationale.
 
 **OCI labels:** The Dockerfile includes static `LABEL` instructions for baseline
 OCI Image Spec annotations (`title`, `description`, `licenses`, `vendor`). These are
 always present on locally-built images. In CI, `docker/metadata-action` supplements these
-with dynamic labels (created, revision, source, url, version) — see
+with dynamic labels (created, revision, source, url, version); see
 [Build Images Workflow — OCI Annotations](build-images-workflow.md#oci-annotations).
 
 ### venv-builder
@@ -78,7 +78,7 @@ with dynamic labels (created, revision, source, url, version) — see
 **Location:** `images/venv-builder/Dockerfile`
 
 Build-stage image that extends `python-base` with compilation tools and a prepared
-Python virtualenv. This image is never deployed — it exists only as a `FROM` target
+Python virtualenv. This image is never deployed: it exists only as a `FROM` target
 for multi-stage service builds.
 
 | Property | Value |
@@ -113,16 +113,16 @@ The virtualenv includes five packages shared by all OpenStack services, version-
 | `uwsgi` | WSGI application server |
 
 These packages are **version-pinned** in `requirements.txt` so the `venv-builder` image is
-reproducible — without pins they would resolve to whatever is latest on PyPI at build time.
-The image stays release-independent: the pins are deliberately not taken from any single
+reproducible: without pins they would resolve to whatever is latest on PyPI at build time.
+The image stays release-independent: the pins are not taken from any single
 release's `upper-constraints.txt`. The OpenStack-dependency subset (`cryptography`,
 `pymemcache`, `pymysql`, `python-memcached`) is authoritatively re-pinned per release by
 service Dockerfiles via `uv pip install --constraint upper-constraints.txt`; `uwsgi` is not
 an OpenStack dependency (it is absent from `upper-constraints.txt`), so its version is fixed
-here. Renovate tracks these pins through its native `pip_requirements` manager — major bumps
+here. Renovate tracks these pins through its native `pip_requirements` manager: major bumps
 are gated for manual review, minor/patch are automerged after a three-day soak.
 
-**OCI labels:** Same static `LABEL` pattern as `python-base` — title, description,
+**OCI labels:** Same static `LABEL` pattern as `python-base`: title, description,
 licenses, and vendor are embedded in the Dockerfile for local build visibility.
 
 ## Service Images
@@ -167,7 +167,7 @@ The Keystone identity service image uses a two-stage build:
 
 **OCI labels:** The `LABEL` instruction is placed in Stage 2 (runtime) before
 the `USER` instruction. Labels added in Stage 1 (build) are discarded by Docker's
-multi-stage build process — only the runtime stage labels appear on the final image. In
+multi-stage build process: only the runtime stage labels appear on the final image. In
 CI, `docker/metadata-action` overrides `org.opencontainers.image.version` with the
 upstream OpenStack release version from `source-refs.yaml` via a `type=raw` tag strategy.
 
@@ -195,7 +195,7 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 
 **Stage 2 (runtime)** — extends `python-base`:
 
-- Declares `ARG EXTRA_APT_PACKAGES` (empty for horizon today — the dashboard is pure
+- Declares `ARG EXTRA_APT_PACKAGES` (empty for horizon today, the dashboard is pure
   Python; the pymemcache session-cache client comes from the venv-builder base venv)
 - Copies `/var/lib/openstack` (virtualenv plus pre-built static assets) from the build
   stage using `COPY --from=build --link`
@@ -210,12 +210,12 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 - Runs as `openstack` user (UID 42424, GID 42424)
 - Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
 - Serves via uWSGI loading `openstack_dashboard.wsgi` directly (the module ships
-  `application`) — no hand-written wsgi script, and static assets are served through
+  `application`), no hand-written wsgi script, and static assets are served through
   `uwsgi --static-map /static=/var/lib/openstack/horizon-static`
 - i18n message catalogs are not compiled (`compilemessages` needs gettext at build
   time); the dashboard renders in English. Deferred until a locale requirement lands
 
-**Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
+**Unit tests:** horizon ships no `.stestr.conf`: its Django suite runs under pytest.
 `hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
 horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
 
@@ -224,14 +224,14 @@ horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
 **Location:** `images/glance/Dockerfile`
 
 The Glance service image uses the same two-stage build as Keystone. Both launch
-modes ship in one image by construction — 2025.2 starts the eventlet `glance-api`
+modes ship in one image: 2025.2 starts the eventlet `glance-api`
 console script, and 2026.1+ runs uWSGI with the module path
 `glance.wsgi.api:application`.
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
 - Declares `ARG PIP_EXTRAS` (unused by glance today; kept for parity) and
-  `ARG PIP_PACKAGES`, which carries `glance_store[s3]` — the S3 store driver's
+  `ARG PIP_PACKAGES`, which carries `glance_store[s3]`: the S3 store driver's
   extra lives on `glance_store`, not `glance`, and pulls `boto3`, `botocore`,
   and `s3transfer` (all pinned in `upper-constraints.txt`)
 - Mounts `upper-constraints.txt` and the Glance source tree via named build
@@ -239,7 +239,7 @@ console script, and 2026.1+ runs uWSGI with the module path
 - Installs Glance into the virtualenv using `uv pip install --constraint`. The
   `--prefix` install generates the `glance-api` and `glance-manage` console
   scripts from `setup.cfg` (it only skips PBR `wsgi_scripts`), so no wsgi script
-  is hand-written — the 2026.1 uWSGI module path needs none
+  is hand-written: the 2026.1 uWSGI module path needs none
 
 **Stage 2 (runtime)** — extends `python-base`:
 
@@ -271,7 +271,7 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 runs its suite under stestr (the default path, as for keystone).
 
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
-gate — it verifies the CLIs, importability, the uWSGI module path, the S3 store
+gate: it verifies the CLIs, importability, the uWSGI module path, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
 
 ## Named Build Contexts
@@ -321,7 +321,7 @@ selects a specific file within that context.
 
 All release-specific configuration lives under `releases/<release>/` (e.g.,
 `releases/2025.2/`). These files are the single source of truth for what gets built.
-Adding a new service or updating a version requires editing only these files — not
+Adding a new service or updating a version requires editing only these files, not
 Dockerfiles.
 
 ### source-refs.yaml
@@ -342,7 +342,7 @@ keystone: "28.0.0"
 ```
 
 Each key is a service name matching the Dockerfile directory under `images/`. Values
-are quoted strings representing git refs — typically release tags (e.g., `"28.0.0"`).
+are quoted strings representing git refs, typically release tags (e.g., `"28.0.0"`).
 
 To add a new service, add a single line: `<service>: "<git-ref>"`.
 
@@ -454,7 +454,7 @@ is built, independent of the upstream pin.
 
 The script reads `releases/<release>/upper-constraints.txt` relative to the current working
 directory (must be invoked from the repository root) and modifies it in-place. It uses GNU
-`sed -i` for modifications (default on Ubuntu/CI runners — BSD `sed` is not supported).
+`sed -i` for modifications (default on Ubuntu/CI runners; BSD `sed` is not supported).
 
 **Arguments:**
 
@@ -557,7 +557,7 @@ with `# DEVIATION` comments in the affected Dockerfiles:
 The architecture document's Keystone Dockerfile example creates a per-service user
 (e.g., `groupadd keystone` / `useradd keystone`). The implementation uses a single
 generic `openstack` user (UID/GID 42424) defined in `python-base` and shared by all
-service images. This reduces complexity and image layers — each service image inherits
+service images. This reduces complexity and image layers: each service image inherits
 the user via `USER openstack` without needing its own user creation step.
 
 The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the

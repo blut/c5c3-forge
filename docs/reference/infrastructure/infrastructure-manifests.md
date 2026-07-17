@@ -79,7 +79,7 @@ inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
 helm-controller to create namespaces when installing charts. However, this does not help
-when applying HelmRelease CRs via `kubectl apply -k` — the target namespace must already
+when applying HelmRelease CRs via `kubectl apply -k`: the target namespace must already
 exist for the API server to accept namespaced resources. The explicit `Namespace` resources
 solve this chicken-and-egg problem.
 
@@ -141,13 +141,13 @@ namespace, and poll at `interval: 1h`.
 
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
-— still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
-— pinned to the upstream release tag `v2.6.0` and scoped to `/dist` via `spec.ignore`.
+(still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`)
+pinned to the upstream release tag `v2.6.0` and scoped to `/dist` via `spec.ignore`.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
 The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
-`deploy/kind/chaos-mesh/source.yaml` — it is intentionally absent
+`deploy/kind/chaos-mesh/source.yaml`: it is absent
 from `deploy/flux-system/{sources,kustomization.yaml}`. See
 [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
@@ -163,7 +163,7 @@ registry URL is the chart *namespace* and the chart name lives in the HelmReleas
 ## HelmRelease Operators
 
 Ten HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
-applied separately via a Flux `Kustomization` — see
+applied separately via a Flux `Kustomization`; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
@@ -206,7 +206,7 @@ The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
 external-secrets, mariadb-operator, memcached-operator). It also drives K-ORC's
 ApplicationCredential / Service / Endpoint CRDs, but K-ORC is applied by the separate
-Flux `Kustomization` above, so it cannot be a `dependsOn` edge — the c5c3-operator's
+Flux `Kustomization` above, so it cannot be a `dependsOn` edge: the c5c3-operator's
 manager instead requires those CRDs to be present at startup.
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
@@ -311,7 +311,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 The production ESO kustomization renders the shared cluster-scoped
 `ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`), which remains the
 **default** store every ControlPlane and its children use. Per-tenant namespaced
-`SecretStore`s are **not** created here — they are provisioned per ControlPlane
+`SecretStore`s are **not** created here: they are provisioned per ControlPlane
 by `deploy/openbao/bootstrap/setup-eso-tenant.sh` when a tenant opts in via
 `spec.secretStoreRef` (see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenantsh) and the
@@ -360,11 +360,11 @@ S3 endpoint before any glance-operator lands). Its instance CRs are described un
 
 No Helm values are overridden. The Garage image rides the operator/chart releases (no
 custom `GarageCluster.spec.image` pin), and the operator's admission/conversion webhooks
-are on by default — hence the `dependsOn: cert-manager` edge.
+are on by default: hence the `dependsOn: cert-manager` edge.
 
 **Accepted risk (decided 2026-07-15):** garage-operator is a young, single-maintainer,
-pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** — never a
-production dependency of the operators — and the consuming surface is deliberately thin
+pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** (never a
+production dependency of the operators), and the consuming surface is thin
 (three instance CRs plus two ExternalSecrets), so a later provider swap stays local to
 this layer.
 
@@ -388,9 +388,9 @@ certificates (`openbao-client-tls`, `eso-openbao-client-tls`) are required so
 that the OpenBao pods themselves (Raft `retry_join` + in-pod `bao` exec
 wrappers) and the External Secrets Operator can complete the TLS handshake.
 The listener carries `tls_client_ca_file = "/openbao/tls/ca.crt"` and
-`tls_require_and_verify_client_cert = true`, so every connection on `:8200` —
-whether from a Raft peer, the in-pod bootstrap script, or
-`ClusterSecretStore/openbao-cluster-store` — must present a client certificate
+`tls_require_and_verify_client_cert = true`, so every connection on `:8200`
+(whether from a Raft peer, the in-pod bootstrap script, or
+`ClusterSecretStore/openbao-cluster-store`) must present a client certificate
 that chains to the same self-signed CA bundle as the server cert; the
 Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
 *after* the transport-layer admission gate. See
@@ -431,7 +431,7 @@ Both client certs are issued from the same `openbao-ca-issuer` as
 `deploy/flux-system/infrastructure/openbao-ca-issuer.yaml` and itself
 bootstrapped by `selfsigned-cluster-issuer`). Sharing one CA is what makes the
 listener's `tls_client_ca_file = /openbao/tls/ca.crt` validate every presented
-client cert — a SelfSigned issuer would mint each Certificate as its own root
+client cert: a SelfSigned issuer would mint each Certificate as its own root
 and leave the chains unrelated. Both client certs carry
 `usages: ["client auth"]`, with the same `duration` / `renewBefore` as
 `openbao-tls` so server and client rotation cadences stay aligned. See
@@ -469,8 +469,8 @@ The release carries an optional `valuesFrom` reference to a
 `keystone-system`. `hack/refresh-operator-image-digests.sh` (re)applies that
 ConfigMap at deploy time on the `WITH_CONTROLPLANE=true` flux path, pinning
 the mutable `latest` tag to the digest current at deploy so a freshly merged
-operator image actually rolls out. When the ConfigMap is absent — the default
-Quick Start and CI paths — the release renders tag-only, exactly as before.
+operator image actually rolls out. When the ConfigMap is absent (the default
+Quick Start and CI paths), the release renders tag-only, exactly as before.
 Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 `image.tag` and `image.digest` coexist.
 
@@ -487,7 +487,7 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
-CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
+CRDs (`ApplicationCredential`, `Service`, `Endpoint`, and related kinds) that the
 c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
 
 K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` over the upstream
@@ -506,7 +506,7 @@ authenticates **per resource** via each CR's `CloudCredentialsRef`, resolved in 
 CR's own (control-plane) namespace, so the credential chain below materialises a
 co-located `k-orc-clouds-yaml` copy there via the per-ControlPlane ExternalSecret the
 c5c3-operator creates and owns (`reconcileKORC`). K-ORC therefore needs no global
-default `clouds.yaml` mount, so there is no longer an `orc-system` copy — the static
+default `clouds.yaml` mount, so there is no longer an `orc-system` copy: the static
 manifest that previously declared it has been removed. The `orc-system` Namespace
 itself remains because the K-ORC installer's own resources land there. See
 [Admin Credential Chain](#admin-credential-chain) below.
@@ -525,7 +525,7 @@ itself remains because the K-ORC installer's own resources land there. See
 
 The c5c3-operator runs the `ControlPlane` reconciler that orchestrates a Keystone
 control plane end-to-end. It depends on the four operators whose CRs
-it projects — `keystone-operator` for the Keystone instance, `external-secrets` and
+it projects: `keystone-operator` for the Keystone instance, `external-secrets` and
 `mariadb-operator` and `memcached-operator` for the supporting platform services. It
 also drives K-ORC's `ApplicationCredential` / `Service` / `Endpoint` CRDs to register
 the catalog and rotate the admin credential, but K-ORC is the separate Flux
@@ -612,7 +612,7 @@ domain. The file declares two resources:
 
 The `selfsigned-cluster-issuer` mints a self-signed CA `Certificate` (`isCA: true`,
 3-year lifetime, 30-day `renewBefore`) into the `openstack-db-ca` Secret in the
-`cert-manager` namespace — cert-manager's default `--cluster-resource-namespace`,
+`cert-manager` namespace: cert-manager's default `--cluster-resource-namespace`,
 which is where a CA-type `ClusterIssuer` looks up its `secretName`. The
 `openstack-db-ca-issuer` `ClusterIssuer` then signs every leaf certificate inside
 the OpenStack DB trust domain:
@@ -621,7 +621,7 @@ the OpenStack DB trust domain:
 - MaxScale listener TLS material (same issuer via inheritance / explicit
   `serverCertIssuerRef`).
 - The Keystone DB-client keypair issued by the keystone-operator's
-  `reconcileDatabaseTLS` sub-reconciler — the constant
+  `reconcileDatabaseTLS` sub-reconciler: the constant
   [`dbCAIssuerName`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
   hard-codes the same string (`"openstack-db-ca-issuer"`), so a rename here MUST be
   matched in the operator.
@@ -655,7 +655,7 @@ by the mariadb-operator. MaxScale is enabled with 2 replicas to provide intellig
 routing and read/write splitting across the Galera nodes.
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
-`password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
+`password`). The production stack ships **no** `ExternalSecret` for it: a non-kind Flux
 MariaDB baseline is expected to provide the `mariadb-root-password` Secret itself. On
 kind, a kind-only overlay shim
 (`deploy/kind/infrastructure/mariadb-root-password-externalsecret.yaml`) materialises it
@@ -664,9 +664,9 @@ self-contained.
 
 > **Non-Goal — operator-owned root credential.** Unlike the Keystone admin password
 > (which the c5c3-operator now projects per ControlPlane as a dedicated
-> `ExternalSecret`), the MariaDB **root** password is deliberately **not**
-> operator-owned. Provisioning it is left to the MariaDB baseline — the kind shim above,
-> or a production Flux baseline — keeping the operator off the database superuser
+> `ExternalSecret`), the MariaDB **root** password is **not**
+> operator-owned. Provisioning it is left to the MariaDB baseline (the kind shim above,
+> or a production Flux baseline), keeping the operator off the database superuser
 > credential path.
 
 **Services:**
@@ -715,7 +715,7 @@ spec:
 
 The mariadb-operator (v0.30+) auto-derives the server and client CA bundles from the
 referenced issuer, so explicit `serverCASecretRef` / `clientCASecretRef` entries are
-intentionally omitted — see the inline `DECISION` comment in `mariadb.yaml` for the
+intentionally omitted; see the inline `DECISION` comment in `mariadb.yaml` for the
 trade-off against the cross-namespace `*CASecretRef` form. End-to-end verification
 that the live connection is encrypted lives in
 [`tests/e2e/keystone/database-tls/chainsaw-test.yaml`](https://github.com/c5c3/forge/blob/main/tests/e2e/keystone/database-tls/chainsaw-test.yaml)
@@ -759,12 +759,12 @@ Three instance CRs (API group `garage.rajsingh.info`) declare the S3 object stor
 
 `GarageCluster` is written against the `v1beta2` storage version with
 `replication.factor: 1`, a single storage tier, `network.service.type: ClusterIP`, and
-the S3 API on `:3900` with SigV4 region `garage` (path-style addressing — virtual-host
+the S3 API on `:3900` with SigV4 region `garage` (path-style addressing: virtual-host
 style would need wildcard DNS). No `spec.image` is set, so the Garage version rides the
 operator/chart releases. The kind overlay
 (`deploy/kind/infrastructure/kustomization.yaml`) patches the storage tier to a single
 node with small PVCs on the `standard` storage class, mirroring the MariaDB/Memcached
-single-node kind footprint. This is a **CI/dev fixture** — plain HTTP in-cluster, single
+single-node kind footprint. This is a **CI/dev fixture**: plain HTTP in-cluster, single
 tier; production-grade multi-node/zone-aware guidance is out of scope.
 
 **Credential flow — OpenBao stays the single source of truth.** No key material is read
@@ -808,7 +808,7 @@ the CR for GC and created in the ControlPlane's child namespace. It is named aft
 `ClusterSecretStore`, with `creationPolicy: Owner` and `refreshInterval: 1h`.
 Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
 arbitrarily named ControlPlane resolves to the correct key with **no manifest
-edit** — the operator now resolves what was previously deferred for this ExternalSecret.
+edit**: the operator now resolves what was previously deferred for this ExternalSecret.
 
 **Optional `cacert` entry (External keystone mode)** — when the ControlPlane sets
 `spec.services.keystone.external.caBundleSecretRef`, the ExternalSecret carries a
@@ -829,7 +829,7 @@ removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef
 resolved in the control-plane namespace, so no cluster-global default mount is needed.
 The `orc-system` Namespace itself is retained (co-declared in
 `deploy/flux-system/namespaces.yaml`) because the K-ORC installer's own resources land
-there — it no longer hosts a `clouds.yaml` copy.
+there: it no longer hosts a `clouds.yaml` copy.
 
 On a fresh cluster the bootstrap `clouds.yaml` at the per-CR OpenBao key is seeded
 by the **operator** (`reconcileKORC` → `seedBootstrapCloudsYAML`, write-if-empty):
@@ -952,7 +952,7 @@ ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
 its backing CA `Certificate`, the MariaDB Galera cluster, the
 Memcached cluster, and the Garage object store (`GarageCluster` / `GarageBucket` /
 `GarageKey`). These resources require CRDs that are installed by the operator
-HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
+HelmReleases in step 1. If CRDs are not yet available, the apply will fail: wait
 for the operators to finish installing and retry.
 
 > **`hack/deploy-infra.sh` ordering.** The end-to-end deploy script applies the
@@ -960,7 +960,7 @@ for the operators to finish installing and retry.
 > `db-ca-issuer.yaml`) directly in its **Phase 2**, before the main infrastructure
 > kustomization, so that MariaDB has `openstack-db-ca-issuer` available the moment
 > it tries to render its server certificate. The kustomization apply that follows
-> is idempotent — the same manifests are listed in
+> is idempotent: the same manifests are listed in
 > `infrastructure/kustomization.yaml` so a manual `kubectl apply -k` path also
 > works.
 
@@ -1005,8 +1005,8 @@ The [garage-operator](#garage-operator) is the worked example of an **OCI-type
 third-party** operator following this recipe: step 1 adds an OCI HelmRepository
 (`sources/garage-operator.yaml`, `spec.type: oci`, the registry namespace as `url`); the
 release (`releases/garage-operator.yaml`) references it by `sourceRef.name` and carries
-the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe
-— Renovate's native Flux handling resolves the HelmRelease version range with no custom
+the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe:
+Renovate's native Flux handling resolves the HelmRelease version range with no custom
 rule, exactly as for the HTTPS sources.
 
 Infrastructure instance CRs (e.g., a new database, cache, or object-store cluster) follow
@@ -1039,7 +1039,7 @@ metadata).
 ### Namespace auto-creation
 
 All HelmReleases set `install.createNamespace: true` as a safety net for FluxCD
-deployments. This is complementary to the explicit `Namespace` resources — the explicit
+deployments. This is complementary to the explicit `Namespace` resources: the explicit
 resources handle the `kubectl apply -k` path, while `createNamespace` handles edge cases
 in FluxCD reconciliation.
 
@@ -1066,7 +1066,7 @@ documented above lives in the `architecture/` git submodule:
 - `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` — the restricted admin Application Credential lifecycle
 
 These chapters are the authoritative design source. They are **updated upstream only**
-and reach this repository through a submodule pointer bump — they are **not** edited from
+and reach this repository through a submodule pointer bump: they are **not** edited from
 this repository or worktree. Treat any divergence between these chapters and
 the manifests above as a drift to reconcile at the source, not by editing the submodule
 in place.
@@ -1079,7 +1079,7 @@ kind-only demo manifests on top of the production base. These files live under
 so they never reach production clusters. The section below catalogues these addons;
 earlier kind-only manifests (Headlamp, OpenBao UI patch) are documented in the Quick Start.
 Chaos Mesh ships as a
-separate **opt-in** kind overlay at `deploy/kind/chaos-mesh/` — applied only when
+separate **opt-in** kind overlay at `deploy/kind/chaos-mesh/`: applied only when
 `WITH_CHAOS_MESH=true` is set on `make deploy-infra`; see
 [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
 
@@ -1089,7 +1089,7 @@ separate **opt-in** kind overlay at `deploy/kind/chaos-mesh/` — applied only w
 
 A single `ResourceSet` CR drives the flux-operator's bundled
 [Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface for the kind
-Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
+Quick Start (Step 4a). The `ResourceSet` renders two sibling resources: an
 `OCIRepository` pointing at the official flux-operator Helm chart and a
 `HelmRelease` that installs that chart with only the Web UI sub-chart enabled.
 
@@ -1114,14 +1114,14 @@ Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
 automatically by a Renovate `customManager` entry in `renovate.json` that
 targets `deploy/kind/base/flux-web.yaml` and pulls release metadata from
 `controlplaneio-fluxcd/flux-operator` GitHub releases. The customManager shares
-the same `packageRules` as `hack/deploy-infra.sh` — major upgrades are
+the same `packageRules` as `hack/deploy-infra.sh`: major upgrades are
 disabled, minor/patch upgrades auto-merge after a three-day `minimumReleaseAge`
 cooldown.
 
-**Production opt-out.** `deploy/flux-system/kustomization.yaml` deliberately
+**Production opt-out.** `deploy/flux-system/kustomization.yaml`
 does **not** list `deploy/kind/base/flux-web.yaml`. The flux-operator Web UI
 ships without token authentication, without TLS termination, and without an
-Ingress story — it is safe as a localhost port-forward demo on a single-node
+Ingress story: it is safe as a localhost port-forward demo on a single-node
 kind cluster, not as a shared-cluster surface. Production overlays can opt
 back in explicitly once upstream adds those prerequisites.
 
@@ -1131,7 +1131,7 @@ back in explicitly once upstream adds those prerequisites.
 kubectl port-forward svc/flux-web -n flux-system 9080:9080
 ```
 
-Browse <http://localhost:9080> — no login required. The Web UI complements
+Browse <http://localhost:9080>; no login required. The Web UI complements
 Headlamp by rendering the three flux-operator-specific CRDs (`ResourceSet`,
 `ResourceSetInputProvider`, `FluxReport`) that the generic Headlamp Flux
 plugin does not know about.
@@ -1142,7 +1142,7 @@ plugin does not know about.
 
 [Chaos Mesh](https://chaos-mesh.org/) ships as a separate **opt-in** kind
 overlay. The default `make deploy-infra` flow does **not** install
-it — first-run deployments skip the privileged `chaos-daemon` DaemonSet, the
+it: first-run deployments skip the privileged `chaos-daemon` DaemonSet, the
 `chaos-mesh` namespace, and the upstream HelmRepository / HelmRelease pair so
 that developers who never run chaos E2E suites pay zero install cost. The
 production `deploy/flux-system/` overlay also does not install Chaos Mesh.
@@ -1181,7 +1181,7 @@ opt into Chaos Mesh start from the upstream defaults instead of inheriting
 the kind-tuning values.
 
 **No load-restrictor flag required.** The overlay has no parent-directory
-`../../` references — every resource (`namespace.yaml`, `source.yaml`,
+`../../` references: every resource (`namespace.yaml`, `source.yaml`,
 `release.yaml`) lives under `deploy/kind/chaos-mesh/`. Kustomize's default
 `LoadRestrictionsRootOnly` security check is therefore satisfied without
 `--load-restrictor=LoadRestrictionsNone`, which matters because kubectl's
@@ -1203,7 +1203,7 @@ This is the prerequisite for `make e2e-chaos`. See
 
 [`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 ships as a separate **opt-in** kind overlay. The default
-`make deploy-infra` flow does **not** install it — the `monitoring`
+`make deploy-infra` flow does **not** install it: the `monitoring`
 namespace stays absent, and Prometheus / Grafana / the prometheus-operator
 pods do not consume any of the kind node's CPU or memory budget unless a
 contributor explicitly opts in. The production `deploy/flux-system/` overlay
@@ -1229,7 +1229,7 @@ the production tree). The overlay bundles the resources with:
 | Source | `prometheus-community` HelmRepository (reused from `deploy/flux-system/sources/`) |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
-**Kind-tuned values** (deliberately too lean for a real workload — they exist
+**Kind-tuned values** (too lean for a real workload: they exist
 so the stack fits in a single-node kind cluster alongside Flux, the operators,
 and the OpenStack control plane):
 
@@ -1247,7 +1247,7 @@ and the OpenStack control plane):
 
 **Dashboard provisioning**. The overlay also adds a
 `configMapGenerator` that bundles the keystone-operator dashboard JSON
-(`operators/keystone/dashboards/keystone-operator.json` — the **single source
+(`operators/keystone/dashboards/keystone-operator.json`: the **single source
 of truth**, never forked into the overlay) with the
 `grafana_dashboard: "1"` and `app.kubernetes.io/part-of: kube-prometheus-stack`
 labels. Grafana's sidecar discovers the labelled ConfigMap on startup and
@@ -1255,12 +1255,12 @@ imports it into the **Dashboards → Keystone Operator** entry without any
 manual API call. Because the dashboard JSON lives outside the overlay
 directory, `hack/deploy-infra.sh` performs an idempotent copy
 into `deploy/kind/prometheus/keystone-operator.json` immediately before
-`kubectl apply -k` runs — this satisfies kustomize's default
+`kubectl apply -k` runs: this satisfies kustomize's default
 `LoadRestrictionsRootOnly` constraint (the overlay has no `../` references)
 without requiring `--load-restrictor=LoadRestrictionsNone`.
 
 **Local validation (`make stage-prometheus-dashboard`).** The staged
-`deploy/kind/prometheus/keystone-operator.json` is git-ignored — the
+`deploy/kind/prometheus/keystone-operator.json` is git-ignored: the
 canonical file lives only at `operators/keystone/dashboards/keystone-operator.json`.
 Developers who want to run `kustomize build deploy/kind/prometheus/`,
 `kubectl apply -k deploy/kind/prometheus/`, or `chainsaw lint` against the
@@ -1289,7 +1289,7 @@ kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
 
 …and waits for the keystone-operator HelmRelease to reconcile back to
 `Ready=True` on the new values. The patch is **only applied when
-`WITH_PROMETHEUS=true`** — the chart values themselves are never modified,
+`WITH_PROMETHEUS=true`**: the chart values themselves are never modified,
 which keeps the production posture unchanged.
 
 **Opt-in usage:**
@@ -1300,8 +1300,8 @@ WITH_PROMETHEUS=true make deploy-infra
 
 This is the prerequisite for `make e2e-prometheus` (see
 [CI / e2e-prometheus job](../ci-cd/ci-workflow#e2e-prometheus) for the workflow). For the kind UI
-walkthrough — port-forward, default Grafana credentials, the bundled
-`Keystone Operator` dashboard, and a Prometheus targets sanity-check — see
+walkthrough (port-forward, default Grafana credentials, the bundled
+`Keystone Operator` dashboard, and a Prometheus targets sanity-check), see
 [Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
 
 **Posture summary.** Reviewers checking new kind-only opt-ins should treat
@@ -1319,7 +1319,7 @@ review pattern catalogues the full surface area.
 
 [`metrics-server`](https://github.com/kubernetes-sigs/metrics-server) ships as
 a separate **opt-in** kind overlay. The default `make deploy-infra` flow does
-**not** install it — the `kube-system` metrics-server stays absent so the
+**not** install it: the `kube-system` metrics-server stays absent so the
 default Quick Start does not spend the kind node's budget on a component most
 tutorials do not need. The production `deploy/flux-system/` overlay also does
 not install it: managed distributions ship their own metrics-server, and
@@ -1334,7 +1334,7 @@ from the resource-metrics API, and without a metrics-server it reports
 The overlay is self-contained: the `HelmRepository` and `HelmRelease` live in
 `deploy/kind/metrics-server/source.yaml` and
 `deploy/kind/metrics-server/release.yaml`. Unlike the chaos-mesh and
-kube-prometheus-stack overlays it ships **no** `Namespace` — the chart defaults
+kube-prometheus-stack overlays it ships **no** `Namespace`: the chart defaults
 to `priorityClassName: system-cluster-critical`, which only resolves in the
 pre-existing `kube-system` Namespace, so the HelmRelease targets `kube-system`
 directly.

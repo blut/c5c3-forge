@@ -76,7 +76,7 @@ Two settings are rendered by the operator and are **not** configurable through
 
 - `WEBSSO_USE_HTTP_REFERER = False`. It defaults to `True` upstream, which makes
   `openstack_auth` validate the returned token against the Keystone URL derived
-  from the browser's `Referer` — i.e. the external gateway URL, resolved
+  from the browser's `Referer`: i.e. the external gateway URL, resolved
   server-side from inside the pod, where it does not reach Keystone. With
   `False` it validates against `OPENSTACK_KEYSTONE_URL` instead.
 - `SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]`, rendered when
@@ -119,7 +119,7 @@ Operator-managed sub-resources (Deployment, Service, PodDisruptionBudget,
 HorizontalPodAutoscaler, NetworkPolicy, HTTPRoute) use the bare CR name with
 no suffix, matching the keystone convention. A Horizon CR named `horizon` in
 the `openstack` namespace is therefore reachable in-cluster at
-`horizon.openstack.svc.cluster.local:8080` — the Service DNS name is the CR
+`horizon.openstack.svc.cluster.local:8080`: the Service DNS name is the CR
 name. The immutable settings ConfigMap is the one derived name:
 `{name}-config-<content-hash>`.
 

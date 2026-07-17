@@ -88,7 +88,7 @@ All 9 test suites require the infrastructure stack and Chaos Mesh to be deployed
 healthy.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
-Chaos Mesh is **opt-in** in the kind Quick Start — the default `make deploy-infra`
+Chaos Mesh is **opt-in** in the kind Quick Start: the default `make deploy-infra`
 flow leaves the `chaos-mesh` namespace absent. Run
 `WITH_CHAOS_MESH=true make deploy-infra` before `make e2e-chaos`, or `make e2e-chaos`
 will fail its preflight check (`chaos-mesh is not installed`). See the
@@ -137,14 +137,14 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered; its two matrix legs gate differently — the pod leg is
+The job is path-filtered; its two matrix legs gate differently: the pod leg is
 blocking, the network leg is not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
-`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job. Additionally, any Go code change — whether in
-a specific operator (e.g., `operators/keystone/**/*.go`) or in shared code
-(`internal/common/**/*.go` via `go_common`) — triggers the job, since chaos tests validate
+`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job. Additionally, any Go code change triggers
+the job, whether in a specific operator (e.g., `operators/keystone/**/*.go`) or in shared code
+(`internal/common/**/*.go` via `go_common`), since chaos tests validate
 operator resilience against the current codebase. On `v*` tag pushes, the job is forced
 active regardless of which files were touched.
 
@@ -160,7 +160,7 @@ active regardless of which files were touched.
 cancelled.
 
 **Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' }}</code>):** The `pod`
-leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, rotation)
+leg is **blocking**: a failure in any PodChaos suite (operator restart, PDB, rotation)
 fails the build. The `network` leg stays **non-blocking**, because its
 `ip_set`/`sch_netem` kernel-module dependency is resolvable only on the GitHub-hosted
 runner and remains prone to environment flakiness; its failures are visible but do not
@@ -225,7 +225,7 @@ for crash loop detection), and namespace events.
 **Scenario:** SC-CHAOS-002
 
 **Purpose:** Validates that the Keystone operator maintains `Ready=True` when a Memcached
-pod is killed. Cache failures are treated as performance degradation only — no sub-condition
+pod is killed. Cache failures are treated as performance degradation only; no sub-condition
 should regress.
 
 **Key difference from MariaDB:** Memcached failure should **not** set `Ready=False`. The
@@ -250,7 +250,7 @@ namespace events.
 
 **Design note:** Step 4 uses Deployment-level `readyReplicas` polling instead of Pod-level
 `kubectl wait` with label selectors. The original `kubectl wait` approach raced with pod
-deletion — when Chaos Mesh deletes a pod, the watch errors with `NotFound` because it
+deletion: when Chaos Mesh deletes a pod, the watch errors with `NotFound` because it
 resolves the label selector once and watches the specific pod object rather than
 re-resolving onto the replacement pod. Deployment-level polling
 watches the persistent Deployment object and is resilient to pod replacements, matching
@@ -324,7 +324,7 @@ Step 4 includes a catch block with chaos diagnostics for the operator pod.
 **Design note:** Step 4 uses condition-based waits on the operator pod (`Ready=false` then
 `Ready=true`) instead of a fixed sleep. This confirms the kill actually took effect before
 proceeding, and is the same pattern used in SC-CHAOS-002. A theoretical race exists where
-the kill-and-restart completes faster than Chainsaw's poll interval — see the inline comment
+the kill-and-restart completes faster than Chainsaw's poll interval; see the inline comment
 for mitigation guidance if CI flakiness occurs.
 
 ---
@@ -337,8 +337,8 @@ for mitigation guidance if CI flakiness occurs.
 
 **Purpose:** Validates that the Keystone operator maintains `FernetKeysReady=True` and
 `Ready=True` when a manually triggered fernet rotation Job's pods are killed by PodChaos.
-The operator's `reconcileFernetKeys()` checks Secret and CronJob existence — not individual
-Job run outcomes — so a failed rotation Job should not degrade the CR status.
+The operator's `reconcileFernetKeys()` checks Secret and CronJob existence (not individual
+Job run outcomes), so a failed rotation Job should not degrade the CR status.
 
 **Key difference from dependency kills:** This scenario targets workload pods (Job pods
 created by a CronJob) rather than infrastructure dependency pods. The PodChaos CR is applied
@@ -413,9 +413,9 @@ mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
   would match MariaDB pod IPs while the packet still carries the Service ClusterIP (kube-proxy
   DNATs ClusterIP→pod IP later, in the node root namespace), so it would never match. Dropping
   at the MariaDB side works because the packet is already DNATed and carries the keystone pod
-  source IP there — the same reason NetworkPolicies match Service-routed traffic by client pod IP.
+  source IP there, the same reason NetworkPolicies match Service-routed traffic by client pod IP.
 - Because the MariaDB cluster CR stays `Ready` under a keystone-only partition, detection
-  cannot come from the operator's view of the cluster — it comes from the keystone API pods'
+  cannot come from the operator's view of the cluster: it comes from the keystone API pods'
   database-aware readiness probe (a TCP connect to the configured DB endpoint, run from
   inside the pod). The probe's connect timeout is sized above the latency scenario's ~12s
   handshake and below an unbounded partition, so a reachable-but-slow database keeps the Pod
@@ -525,7 +525,7 @@ so for CR `keystone-chaos-api`, the PDB is `keystone-chaos-api`.
 **Purpose:** Validates that the Keystone operator recovers after ALL operator pods are killed
 simultaneously (`mode: all`), forcing the Deployment controller to restart every pod and
 trigger leader re-election. After recovery, a spec change (replica patch 1→2) verifies the
-new leader can actively reconcile — proving operational capability beyond just running.
+new leader can actively reconcile, proving operational capability beyond just running.
 
 **Key difference from operator-pod-crash (SC-CHAOS-004):** SC-CHAOS-004 uses `mode: one`,
 killing a single operator pod while leaving other replicas running. SC-CHAOS-009 uses
@@ -566,7 +566,7 @@ recovery to confirm the new leader processes spec changes end-to-end.
   `mode: all` and `gracePeriod: 0`, the kill+reschedule+ready cycle can complete faster
   than the first poll observes, so a previous implementation saw `readyReplicas=2`
   throughout and reported "kill did not take effect". Snapshotting UIDs before applying
-  PodChaos and waiting for each of them to disappear is race-free — it proves replacement
+  PodChaos and waiting for each of them to disappear is race-free: it proves replacement
   happened regardless of timing. The apply and wait share one script because chainsaw
   steps cannot pass state between each other.
 
@@ -625,7 +625,7 @@ suites.
 
 **File:** `tests/e2e-chaos/keystone-federation/chainsaw-test.yaml`
 
-**Scenario:** — (the architecture chaos catalog entry ships with the
+**Scenario:** (the architecture chaos catalog entry ships with the
 identity-backends implementation chapter)
 
 **Purpose:** Two scenarios against a federated Keystone (2 replicas,
@@ -635,7 +635,7 @@ First, the repository's first **container-kill**: Chaos Mesh kills the
 kubelet restarts it in place, so recovery is gated on the named container's
 `restartCount` before asserting `readyReplicas`, `Ready=True`, and a working
 federated bearer flow. Second, a bounded **IdP outage** (pod-failure on
-Keycloak): federated login must fail **closed** (non-2xx — the introspection
+Keycloak): federated login must fail **closed** (non-2xx: the introspection
 path cannot validate bearers) while password auth through the very same
 proxy keeps answering 201; after the outage the federated flow recovers.
 
@@ -699,14 +699,14 @@ Apply CR → Assert Ready=True → Inject PodChaos → Wait Pod Ready=false → 
 2. Apply PodChaos to kill a non-critical dependency pod
 3. Wait for pod to become NotReady (confirms chaos took effect)
 4. Wait for pod to return to Ready (confirms recovery)
-5. Assert **all 6 conditions** remain `True` — no regression
+5. Assert **all 6 conditions** remain `True`: no regression
 6. Delete PodChaos and assert `Ready=True` after recovery
 
 ### Operator Self-Recovery (SC-CHAOS-004)
 
 Used when the operator's own pod is killed and the Deployment controller restarts it.
 The CR conditions should remain stable because the operator crash is invisible to the
-Keystone CR — the Deployment controller handles pod restart, and controller-runtime
+Keystone CR: the Deployment controller handles pod restart, and controller-runtime
 re-registers watches and resumes reconciliation.
 
 ```text
@@ -733,7 +733,7 @@ Apply CR → Assert Ready=True → Inject PodChaos (pod-failure) → Trigger Job
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos with `pod-failure` action **before** creating the Job
 3. Create a manual Job from the CronJob (triggers fault injection on Job pods)
-4. Assert `FernetKeysReady=True` and `Ready=True` — no condition cascade
+4. Assert `FernetKeysReady=True` and `Ready=True`: no condition cascade
 5. Delete PodChaos and assert `Ready=True` after cleanup
 
 ### PDB Availability Guarantee (SC-CHAOS-008)
@@ -752,14 +752,14 @@ Apply CR (replicas: 3) → Assert Ready=True → Assert PDB minAvailable=1
 2. Assert PDB exists with `minAvailable: 1`
 3. Apply PodChaos to kill one API pod (`mode: one`)
 4. Poll until `readyReplicas < 3` (kill took effect), assert `availableReplicas >= 1`
-5. Assert `DeploymentReady=True` and `Ready=True` — no condition regression
+5. Assert `DeploymentReady=True` and `Ready=True`: no condition regression
 6. Delete PodChaos and assert `Ready=True` after full replica count restored
 
 ### Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009)
 
 Used when ALL operator pods are killed simultaneously (`mode: all`), forcing the Deployment
 controller to restart all pods and trigger leader re-election. After recovery, a spec change
-(replica patch) verifies the new leader can actively reconcile — proving operational
+(replica patch) verifies the new leader can actively reconcile, proving operational
 capability beyond just running.
 
 ```text
@@ -772,7 +772,7 @@ Apply CR → Assert Ready=True → Inject PodChaos (mode: all) → Wait readyRep
 2. Apply PodChaos with `mode: all` to kill every operator pod
 3. Poll operator Deployment `readyReplicas`: wait for drop to 0 (kill confirmed), then return to 2 (recovered)
 4. Delete PodChaos to lift the fault
-5. Assert all 6 conditions remain `True` — operator restart is invisible to CR status
+5. Assert all 6 conditions remain `True`: operator restart is invisible to CR status
 6. Patch `spec.deployment.replicas` from 1 to 2
 7. Assert Deployment has `replicas: 2` and `availableReplicas: 2`, and `Ready=True`
 

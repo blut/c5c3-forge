@@ -14,7 +14,7 @@ Beyond the minimal control plane from the
 [Quick Start (ControlPlane)](../quick-start-controlplane.md), the operators
 support a number of configuration options for real cluster deployments. This
 guide covers the ones the `ControlPlane` CR exposes and points to the reference
-for the rest — and to the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
+for the rest, and to the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
 section for the knobs that live only on a Keystone CR you own.
 
 ## Prerequisites
@@ -37,13 +37,13 @@ On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator; the projected fields are re-asserted on every
 reconcile, so editing them on the child is reverted. Configure the knobs the
 `ControlPlane` CRD exposes on the `ControlPlane` CR. A knob the CRD does not
-expose is **standalone-only** — apply it to a Keystone CR you own, in the
+expose is **standalone-only**: apply it to a Keystone CR you own, in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
 the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
 the projection contract.
 :::
 
-Each pattern below is an independent recipe — apply only what you need.
+Each pattern below is an independent recipe: apply only what you need.
 
 ---
 
@@ -52,15 +52,15 @@ Each pattern below is an independent recipe — apply only what you need.
 The Quick Start uses "managed mode", where the operator provisions the MariaDB
 and Memcached the control plane connects to (`spec.infrastructure.database.clusterRef`
 / `cache.clusterRef`). If you already run MariaDB/Galera and Memcached outside the
-operator's reach — managed by another team, hosted externally, or on a different
-operator — use **brownfield mode** with explicit connection parameters on the
+operator's reach (managed by another team, hosted externally, or on a different
+operator), use **brownfield mode** with explicit connection parameters on the
 `ControlPlane` CR.
 
 Brownfield is a **creation-time** decision. The validating webhook freezes
 infrastructure presence and the database/cache mode (managed `clusterRef` vs
 brownfield `host`/`servers`), the database name, replicas, and storageSize after
 the ControlPlane is created, so you cannot flip a managed control plane to
-brownfield in place — set `spec.infrastructure` when you first apply the CR:
+brownfield in place: set `spec.infrastructure` when you first apply the CR:
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -88,11 +88,11 @@ spec:
 
 The reconciler deep-copies the whole `infrastructure.database` and
 `infrastructure.cache` blocks onto the `controlplane-keystone` child, so the
-child connects to exactly the servers you declared here.
+child connects to the servers you declared here.
 
 ::: warning In brownfield mode you own schema setup
 In brownfield mode (no `clusterRef`) the operator leaves the `secretRef` you
-supplied in place — you own that Secret out-of-band — and does **not** create the
+supplied in place (you own that Secret out-of-band) and does **not** create the
 database, user, or grants. Provision them before the control plane reconciles:
 
 ```sql
@@ -103,17 +103,17 @@ FLUSH PRIVILEGES;
 ```
 
 The Secret referenced by `secretRef` must contain both a `username` and a
-`password` key matching the SQL user — the keystone-operator gates `SecretsReady`
+`password` key matching the SQL user: the keystone-operator gates `SecretsReady`
 on the child on both, so a Secret with only `password` leaves
 `controlplane-keystone` stuck at `SecretsReady=False`. Once those exist,
 `db_sync` creates the Keystone schema on first reconcile. The OpenBao
 database-tenant onboarding from the [Quick Start (ControlPlane)](../quick-start-controlplane.md)
-(Step 4) applies to **managed** mode's engine-issued (Dynamic) credentials only —
+(Step 4) applies to **managed** mode's engine-issued (Dynamic) credentials only:
 a brownfield control plane draws no credentials from the OpenBao database engine.
 :::
 
 The webhook enforces that exactly one of `clusterRef` or `host` (`servers` for
-cache) is set — never both — for both `database` and `cache`.
+cache) is set (never both) for both `database` and `cache`.
 
 ---
 
@@ -157,14 +157,14 @@ The "not exposed — standalone-only" knobs are not projectable through the
 
 On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it. The recipes below apply to that CR. Several of them —
-`spec.autoscaling`, `spec.networkPolicy`, `spec.extraConfig` — are **not exposed
+projecting it. The recipes below apply to that CR. Several of them
+(`spec.autoscaling`, `spec.networkPolicy`, `spec.extraConfig`) are **not exposed
 on the `ControlPlane` CRD today**, so a standalone Keystone is the only place they
 can be set.
 
 ### Brownfield database
 
-The standalone equivalent of the ControlPlane brownfield recipe above — explicit
+The standalone equivalent of the ControlPlane brownfield recipe above: explicit
 `host`/`port` and `servers` set directly on the Keystone CR:
 
 ```yaml
@@ -203,7 +203,7 @@ spec:
 
 The same SQL provisioning and `username`+`password` Secret contract from the
 ControlPlane recipe apply. The webhook enforces that exactly one of `clusterRef`
-or `host` is set — never both — for both `database` and `cache`.
+or `host` is set (never both) for both `database` and `cache`.
 
 ### Autoscaling (HPA)
 
@@ -224,9 +224,9 @@ spec:
 ```
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
-- `minReplicas` defaults to `spec.deployment.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
+- `minReplicas` defaults to `spec.deployment.replicas` if unset: omitting it will floor the HPA at your current hand-set replica count, not at 1.
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
-  `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
+  `metrics-server`. The Quick Start kind cluster does **not** ship one by default:
   the HPA will sit at `unknown/80%` until a resource-metrics API is available.
 
   On the kind devstack, opt in with the `WITH_METRICS_SERVER` flag. Bring the
@@ -248,7 +248,7 @@ spec:
 
   The overlay pins the chart to a single major range and bakes in
   `--kubelet-insecure-tls`, which kind requires because its kubelets serve the
-  metrics endpoint with self-signed certificates — no runtime patch needed.
+  metrics endpoint with self-signed certificates: no runtime patch needed.
 
   On non-kind clusters, `metrics-server` is usually already present: most managed
   Kubernetes distributions ship it. If yours does not, install it per the
@@ -271,7 +271,7 @@ for the exact field-to-resource mapping.
 `spec.networkPolicy` is not exposed on the `ControlPlane` CRD today, so it is
 standalone-only. When set, it creates a Kubernetes `NetworkPolicy` that restricts
 ingress to the Keystone API pods. Egress rules for database, cache, and DNS are
-derived automatically from the rest of the CR — you only declare the ingress sources.
+derived automatically from the rest of the CR: you only declare the ingress sources.
 
 ```yaml
 spec:
@@ -291,14 +291,14 @@ Each list entry requires a `namespaceSelector` and may narrow it with an optiona
 `podSelector`. Both are full Kubernetes `metav1.LabelSelector`s, so you can use
 `matchLabels` (as above) or set-based `matchExpressions`.
 Within one entry the two selectors AND together; multiple entries OR. Ingress is
-always restricted to TCP 5000 — there is no per-entry port configuration. When the
-list is non-empty, all other ingress is blocked by default — **including kubelet
-probes from other namespaces, which is normally not an issue because probes
-originate from the node, but verify in your cluster topology.**
+always restricted to TCP 5000: there is no per-entry port configuration. When the
+list is non-empty, all other ingress is blocked by default, **including kubelet
+probes from other namespaces**, which is normally not an issue because probes
+originate from the node, but verify in your cluster topology.
 
 For brownfield or external targets that the auto-derivation cannot see (an off-cluster
-MariaDB host, an external IdP), append explicit rules with `spec.networkPolicy.additionalEgress`
-— they are added after the auto-derived ones rather than replacing them.
+MariaDB host, an external IdP), append explicit rules with `spec.networkPolicy.additionalEgress`:
+they are added after the auto-derived ones rather than replacing them.
 
 Removing `spec.networkPolicy` deletes the NetworkPolicy and restores unrestricted
 traffic. See the [NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
@@ -308,8 +308,8 @@ for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
 
 `spec.extraConfig` is not exposed on the `ControlPlane` CRD today, so it is
 standalone-only. The typed fields on the CR cover the supported configuration
-surface. For everything else — logging levels, oslo.messaging tuning, experimental
-Keystone flags — `spec.extraConfig` takes a `map[section][key] = value` that is
+surface. For everything else (logging levels, oslo.messaging tuning, experimental
+Keystone flags), `spec.extraConfig` takes a `map[section][key] = value` that is
 rendered into the generated `keystone.conf`.
 
 ```yaml
@@ -326,7 +326,7 @@ spec:
 ```
 
 The operator does not validate the content of these sections. A typo becomes a silent
-no-op at best and a crash loop at worst — test changes in a lab before rolling out.
+no-op at best and a crash loop at worst: test changes in a lab before rolling out.
 A change to `extraConfig` triggers a ConfigMap rehash and a rolling Deployment update.
 
 ---
@@ -340,8 +340,8 @@ A change to `extraConfig` triggers a ConfigMap rehash and a rolling Deployment u
 
 ## Tested by
 
-The recipes above are exercised on the CI e2e kind cluster — the operator
-installed with a dev image — by these chainsaw suites:
+The recipes above are exercised on the CI e2e kind cluster (the operator
+installed with a dev image) by these chainsaw suites:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/brownfield-database

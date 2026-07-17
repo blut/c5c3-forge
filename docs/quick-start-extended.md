@@ -50,7 +50,7 @@ identical to what CI validates.
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
 SHA256 checksums. The authoritative versions are declared at the top of
-`hack/install-test-deps.sh` — always use that script rather than installing these tools manually to
+`hack/install-test-deps.sh`: always use that script rather than installing these tools manually to
 stay in sync with what CI uses:
 
 ```bash
@@ -71,8 +71,8 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 ::: tip Nix users
 Instead of `make install-test-deps`, you can run `nix develop` to get every
-tool in the table above — plus `controller-gen`, `gofumpt`, `golangci-lint`,
-`kustomize`, `chainsaw`, and the envtest assets — at the versions CI pins. See
+tool in the table above (plus `controller-gen`, `gofumpt`, `golangci-lint`,
+`kustomize`, `chainsaw`, and the envtest assets) at the versions CI pins. See
 [Nix Development Environment](./contributing/nix-dev-environment.md). Docker
 still has to be installed separately (kind needs a running daemon).
 :::
@@ -119,21 +119,21 @@ cluster` fails with `failed to start container … bind: permission denied`
 on port 443.
 
 **macOS** Docker Desktop binds privileged ports through a system helper
-(`vmnetd`) at `/var/run/com.docker.vmnetd.sock`. If that socket is missing —
-common after a user-mode install of Docker Desktop, or when you are using
-Colima / OrbStack / Rancher Desktop — `kind create cluster` fails with
+(`vmnetd`) at `/var/run/com.docker.vmnetd.sock`. If that socket is missing
+(common after a user-mode install of Docker Desktop, or when you are using
+Colima / OrbStack / Rancher Desktop), `kind create cluster` fails with
 `connecting to /var/run/com.docker.vmnetd.sock: dial unix … no such file or
 directory`. Fix it by enabling **Docker Desktop → Settings → Advanced →
 "Allow privileged port mapping"** (Docker prompts for an admin password and
 installs the helper), or run
 `sudo /Applications/Docker.app/Contents/MacOS/install vmnetd` and restart
-Docker Desktop. Other Docker runtimes do not ship `vmnetd` — use the override
+Docker Desktop. Other Docker runtimes do not ship `vmnetd`; use the override
 below instead.
 
 **Override the host port without privileged binding (any OS):** export
 `KIND_HOST_PORT` before `make deploy-infra` and the script renders a
 non-privileged kind config on the fly. The Envoy proxy still listens on
-NodePort `31443` inside the cluster — only the host-side bind moves.
+NodePort `31443` inside the cluster; only the host-side bind moves.
 
 ```bash
 export KIND_HOST_PORT=8443
@@ -148,7 +148,7 @@ The `KIND_HOST_PORT` override needs `yq` on PATH (only required when the value
 differs from `443`). The Chainsaw E2E suites under
 `tests/e2e/keystone/gateway-quick-start*` hard-code the default
 `https://keystone.127-0-0-1.nip.io/v3` URL and **will not pass with an
-override** — use the
+override**; use the
 [`kubectl port-forward` fallback](#fallback-kubectl-port-forward) for those
 suites or run them in CI (Linux + rootful Docker).
 :::
@@ -236,7 +236,7 @@ monitoring            kube-prometheus-stack-operator-*     Ready (kind-only; WIT
 kube-system           metrics-server-*                     Ready (kind-only; WITH_METRICS_SERVER=true)
 ```
 
-Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
+Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list: a
 broken upstream chart release must never block E2E runs. Step 4 below waits for it explicitly
 at the point you actually need the UI.
 
@@ -257,7 +257,7 @@ Chaos Mesh is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
 deployments are faster and do not require the `chaos-daemon` privileged
 DaemonSet on hosts that don't need it. Production overlays (`deploy/flux-system/`)
-also explicitly omit Chaos Mesh.
+also omit Chaos Mesh.
 
 Opt in by setting `WITH_CHAOS_MESH=true` before `make deploy-infra`:
 
@@ -268,7 +268,7 @@ WITH_CHAOS_MESH=true make deploy-infra
 This applies the kind-only overlay at `deploy/kind/chaos-mesh/`, loads the
 chaos-daemon kernel modules on the kind node, and waits for the Chaos Mesh
 HelmRelease to become Ready alongside the other operators. It is required
-before running the chaos E2E suites — see
+before running the chaos E2E suites; see
 [Chaos E2E Tests](./reference/testing/chaos-e2e-tests.md) for the full prerequisite
 list and `make e2e-chaos` workflow.
 :::
@@ -277,7 +277,7 @@ list and `make e2e-chaos` workflow.
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `monitoring` namespace absent so first-run
 deployments stay lean and do not pin extra CPU/memory on a developer laptop.
-Production overlays (`deploy/flux-system/`) also omit the stack — production
+Production overlays (`deploy/flux-system/`) also omit the stack: production
 clusters wire their own Prometheus.
 
 Opt in by setting `WITH_PROMETHEUS=true` before `make deploy-infra`:
@@ -290,7 +290,7 @@ This applies the kind-only overlay at `deploy/kind/prometheus/`, waits for the
 `kube-prometheus-stack` HelmRelease to become Ready, and patches the
 keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
 want to visualise the keystone-operator metrics live (reconcile p95,
-error rate) — see [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) for the
+error rate); see [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) for the
 port-forward and the bundled `Keystone Operator` dashboard.
 :::
 
@@ -298,7 +298,7 @@ port-forward and the bundled `Keystone Operator` dashboard.
 `metrics-server` is **not installed by default** in the kind Quick Start. The
 default `make deploy-infra` flow leaves the `kube-system` metrics-server absent
 so first-run deployments stay lean. Production overlays (`deploy/flux-system/`)
-also omit it — managed distributions ship their own.
+also omit it: managed distributions ship their own.
 
 Opt in by setting `WITH_METRICS_SERVER=true` before `make deploy-infra`:
 
@@ -319,7 +319,7 @@ third-party image (from `docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`,
 and the per-project vanity registries `oci.external-secrets.io` and
 `docker-registry3.mariadb.com`) is then pulled from its upstream registry inside
 the node's containerd. If you recreate the cluster many times a day, the same
-images are fetched over the wire again and again — slow, and exposed to Docker
+images are fetched over the wire again and again: slow, and exposed to Docker
 Hub rate limits and transient upstream flakes. `kind load docker-image` only
 helps for the handful of images you build yourself; it does nothing for the
 dozen-plus third-party images the infra stack pulls.
@@ -333,8 +333,8 @@ WITH_REGISTRY_CACHE=true make deploy-infra
 
 This starts one small [distribution registry](https://distribution.github.io/distribution/)
 (`registry:2`) container per upstream registry, in pull-through **proxy**
-mode, on the `kind` Docker network — each backed by a persistent Docker volume
-so the cache **survives `kind delete` / recreate cycles** — and wires every
+mode, on the `kind` Docker network, each backed by a persistent Docker volume
+so the cache **survives `kind delete` / recreate cycles**, and wires every
 node's containerd at them via a registry mirror
 (`/etc/containerd/certs.d/<host>/hosts.toml`). It is fully transparent: no
 `spec.image` or chart `image:` edits, no `localhost:5000/...` rewrites. A
@@ -342,7 +342,7 @@ workload referencing `ghcr.io/c5c3/keystone:2025.2` is served from the local
 cache on the second pull, and the distribution proxy **streams** each blob from
 the upstream while caching it inline, so even the first (cold) pull runs at
 roughly origin speed. Mirror entries advertise `pull` + `resolve` capabilities,
-so containerd falls back to the origin registry whenever a cache is down — the
+so containerd falls back to the origin registry whenever a cache is down; the
 cache can never hard-break a pull.
 
 This is **local-dev only**. The default `make deploy-infra` (flag unset) and
@@ -390,7 +390,7 @@ bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stac
 
 The Headlamp Flux plugin is the primary Flux UI used by this project. The `flux-operator`
 also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/))
-that the kind overlay turns on as a demo addon — see
+that the kind overlay turns on as a demo addon; see
 [Step 4a — Open the Flux Web UI](#step-4a-flux-web-ui) for how to reach it.
 Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
 to switch into the Flux views:
@@ -402,7 +402,7 @@ to switch into the Flux views:
 | **Sources** | `HelmRepository` objects (and `GitRepository`/`OCIRepository` if present) with the last successful fetch and artifact revision |
 | **Flux Runtime** | The flux-operator's `FluxInstance/flux` and `FluxReport/flux` — controller versions, reconciliation state, entitlement status |
 
-Use this instead of the legacy `flux get` / `flux logs` CLI — all state the CLI would
+Use this instead of the legacy `flux get` / `flux logs` CLI: all state the CLI would
 print is rendered live here, and every resource row links to the controller logs and
 Kubernetes events that produced it.
 
@@ -413,7 +413,7 @@ Kubernetes events that produced it.
 The kind overlay also ships the flux-operator's own
 [Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (and, alongside it,
 the optional Grafana UI from [Step 4c](#step-4c-grafana-ui) when `WITH_PROMETHEUS=true`).
-This is a kind-only convenience — the production `deploy/flux-system/` overlay keeps the
+This is a kind-only convenience: the production `deploy/flux-system/` overlay keeps the
 Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
 auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
 service port and browse directly:
@@ -422,7 +422,7 @@ service port and browse directly:
 kubectl port-forward svc/flux-web -n flux-system 9080:9080
 ```
 
-Then open <http://localhost:9080> — no login is required.
+Then open <http://localhost:9080>; no login is required.
 
 The Web UI complements Headlamp (Step 4) by rendering the three flux-operator-specific
 Custom Resources that the generic Headlamp Flux plugin does not know about: `ResourceSet`
@@ -436,7 +436,7 @@ and `ResourceSetInputProvider` (the operator's templating primitives) and `FluxR
 
 The kind overlay enables the OpenBao web UI as a demo surface (the optional
 Grafana UI is covered separately in [Step 4c](#step-4c-grafana-ui)). This is a
-kind-only convenience — the production flux-system overlay keeps `ui = false` in the HA
+kind-only convenience: the production flux-system overlay keeps `ui = false` in the HA
 Raft config. Forward the client port and log in with the root token that
 `make deploy-infra` already seeded into the cluster:
 
@@ -444,7 +444,7 @@ Raft config. Forward the client port and log in with the root token that
 kubectl port-forward svc/openbao -n openbao-system 8200:8200
 ```
 
-> **Service selection:** `kubectl get svc -n openbao-system` lists two services —
+> **Service selection:** `kubectl get svc -n openbao-system` lists two services:
 > forward `svc/openbao` (the client `ClusterIP` service that also fronts the UI),
 > **not** `svc/openbao-internal` (the headless Service used for Raft peer
 > discovery between OpenBao pods).
@@ -461,7 +461,7 @@ echo "$BAO_TOKEN"
 
 The listener enforces **mutual TLS**: every connection must present a client certificate that
 chains to the in-cluster CA *before* the application-layer token login runs. A browser without
-one never reaches the login screen — the TLS handshake is reset, which the tooling surfaces as
+one never reaches the login screen: the TLS handshake is reset, which the tooling surfaces as
 `connection reset by peer` / `lost connection to pod`. The kind overlay matches the production
 mTLS posture here.
 
@@ -490,12 +490,12 @@ the OS keychain / system certificate store, so the menu path differs:
 1. *Settings → Privacy & Security → Certificates → View Certificates…*
 2. Tab **Your Certificates → Import…** → select `openbao-client.p12` and enter the
    passphrase you chose above.
-3. *(Optional — removes the trust warning.)* Tab **Authorities → Import…** → select
+3. *(Optional: removes the trust warning.)* Tab **Authorities → Import…** → select
    `openbao-ca.crt` → tick "Trust this CA to identify websites". The server cert carries
    `IP:127.0.0.1` as a SAN, so `https://localhost:8200` then validates cleanly.
 
-Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send — pick
-**"OpenBao Client (kind)"** — then paste the root token to sign in.
+Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send;
+pick **"OpenBao Client (kind)"**, then paste the root token to sign in.
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
 produced this token, see
@@ -507,8 +507,8 @@ produced this token, see
 
 The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
 Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
-**kind-only opt-in** — production overlays (`deploy/flux-system/`) deliberately
-omit the stack so production clusters can wire their own Prometheus. If you
+**kind-only opt-in**: production overlays (`deploy/flux-system/`) omit the
+stack so production clusters can wire their own Prometheus. If you
 have not already opted in, see the
 [Enabling Prometheus & Grafana](#enabling-prometheus--grafana) tip in
 Step 3 (`WITH_PROMETHEUS=true make deploy-infra`).
@@ -539,7 +539,7 @@ bundled dashboard sourced from `operators/keystone/dashboards/keystone-operator.
 In a second terminal, port-forward Prometheus and confirm the keystone-operator
 ServiceMonitor scrape target is `up`. The query path
 (`/api/v1/targets?state=active`) is the same one the chainsaw suite
-issues against the in-cluster Service — so a green local check matches what
+issues against the in-cluster Service, so a green local check matches what
 CI exercises:
 
 ```bash
@@ -549,14 +549,14 @@ curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
 ```
 
 A healthy target reports `"health": "up"`; an empty result means the
-keystone-operator HelmRelease has not been patched yet — re-run
+keystone-operator HelmRelease has not been patched yet; re-run
 `WITH_PROMETHEUS=true make deploy-infra` so the deploy script can flip
 `monitoring.serviceMonitor.enabled=true`.
 
 For non-kind clusters (production overlays, shared dev clusters, anything that
 already runs Prometheus), follow
 [Enable Keystone Operator Metrics](./guides/enable-keystone-operator-metrics.md)
-instead — that guide covers wiring an externally-managed Prometheus to the
+instead: that guide covers wiring an externally-managed Prometheus to the
 operator's ServiceMonitor and is the canonical non-kind path.
 
 ---
@@ -746,7 +746,7 @@ kubectl apply -f keystone.yaml
 If you exported `KIND_HOST_PORT=8443` before `make deploy-infra`, the
 endpoint is reachable at `https://keystone.127-0-0-1.nip.io:8443/v3`
 instead of the default `:443`. The Gateway API `hostname` field stays
-unchanged (Gateway API hostnames carry no port — the HTTPRoute matches
+unchanged (Gateway API hostnames carry no port; the HTTPRoute matches
 the SNI / Host header), but `spec.bootstrap.publicEndpoint` must be set
 explicitly so the issued service catalog points at the same `:8443` URL
 external clients reach. Apply this CR instead:
@@ -810,7 +810,7 @@ admission time.
 ## Step 8 — Wait for Keystone to become Ready
 
 The operator reconciles the CR through fourteen sub-conditions before the
-aggregate `Ready` condition is set — all are always reported; conditions tied to
+aggregate `Ready` condition is set. All are always reported; conditions tied to
 an optional spec field carry a "not required" / "disabled" reason when that
 field is unset:
 
@@ -896,15 +896,15 @@ kubectl get keystone keystone -n openstack -o jsonpath='{.status.conditions}' | 
 The Keystone CR from Step 7 attaches to the `openstack-gw` Gateway and is exposed at
 `https://keystone.127-0-0-1.nip.io/v3`. The kind cluster's `extraPortMappings` bridges the
 host's TCP :443 to the Envoy proxy's NodePort `31443`, so the endpoint resolves directly
-to `127.0.0.1` via the [nip.io](https://nip.io/) wildcard DNS service — no `/etc/hosts`
-edit and no `kubectl port-forward` required.
+to `127.0.0.1` via the [nip.io](https://nip.io/) wildcard DNS service, with no
+`/etc/hosts` edit and no `kubectl port-forward` required.
 
 ::: warning Did you set `KIND_HOST_PORT=8443` in Step 2?
 Then the endpoint is `https://keystone.127-0-0-1.nip.io:8443/v3` instead of the
 default `:443`. Substitute `:8443` everywhere this section writes
 `https://keystone.127-0-0-1.nip.io/...`, including `OS_AUTH_URL`, the verification
 `curl`, and any URL printed by `openstack catalog`. The Gateway hostname and the
-extracted CA from Option B are unchanged — only the port differs. The matching
+extracted CA from Option B are unchanged; only the port differs. The matching
 `spec.bootstrap.publicEndpoint` is shown in the `KIND_HOST_PORT=8443` variant
 block at the end of Step 7.
 :::

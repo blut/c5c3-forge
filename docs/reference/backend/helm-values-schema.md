@@ -22,7 +22,7 @@ This schema is generated from the shared source in
 definitions so they cannot drift (a new operator only needs a
 `WEBHOOK_ENABLED_DESCRIPTIONS` entry naming its CR kind). Edit the generator
 and run
-`make gen-helm-schema`; do not hand-edit `values.schema.json` —
+`make gen-helm-schema`; do not hand-edit `values.schema.json`:
 `make verify-helm-schema` (run in CI) fails on drift.
 :::
 
@@ -60,7 +60,7 @@ Resource fields (`cpu`, `memory`) use a shared `resourceQuantity` definition tha
 either a Kubernetes quantity string matching the pattern
 `^(\.[0-9]+|[0-9]+(\.[0-9]*)?)((e[0-9]+)|(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei))?$`
 or a non-negative number. The pattern enforces mutual exclusion between exponent notation
-(`e[0-9]+`) and SI/binary suffixes — values like `1e3m` or `1e3Ki` are rejected because
+(`e[0-9]+`) and SI/binary suffixes: values like `1e3m` or `1e3Ki` are rejected because
 the Kubernetes quantity grammar does not allow combining both.
 
 | Field | Type | Constraint | Default |
@@ -85,7 +85,7 @@ resources that require a `ClusterRole` to manage.
 **Production recommendation:** For a control plane confined to a single
 namespace, set `rbac.namespaceScoped: true` to bound a compromised operator pod
 to one namespace's Secrets instead of the cluster-wide Secret access the default
-`ClusterRole` grants — see
+`ClusterRole` grants; see
 [Multi-Tenant Deployment → Security trade-off](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
 for the privilege-escalation path this closes. The default stays `false` because
 [some capabilities still need cluster scope](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).

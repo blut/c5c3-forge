@@ -180,7 +180,7 @@ template (`keystone-operator.rbacRules`) stays in this chart.
 
 `Chart.lock` pins the dependency and is committed; the vendored copy under
 `charts/` is a build artifact (git-ignored). `helm dependency build` vendors it
-from the local path — run `make helm-deps` before `helm lint`/`template`/
+from the local path: run `make helm-deps` before `helm lint`/`template`/
 `unittest`, and `make helm-package` does it automatically so the published
 tarball is self-contained.
 
@@ -237,7 +237,7 @@ concurrently. Disable only for single-replica development deployments.
 
 When disabled, the webhook container port (9443) is omitted from the Deployment and no
 webhook configuration resources are created. The operator continues to function without
-admission validation — CRs are not validated or defaulted at admission time.
+admission validation: CRs are not validated or defaulted at admission time.
 
 #### Metrics
 
@@ -384,8 +384,8 @@ The pod template carries a best-effort topology spread constraint (`maxSkew: 1`,
 replicas land on different nodes where possible while single-node clusters
 (kind) stay schedulable. Together with the `PodDisruptionBudget`
 (`minAvailable: 1`, rendered only when `replicas > 1`), a voluntary disruption
-such as a node drain can never evict every replica — and with it the in-process
-admission webhook — at once.
+such as a node drain can never evict every replica (and with it the in-process
+admission webhook) at once.
 
 ### Service Configuration
 
@@ -480,7 +480,7 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 
 Neither configuration intercepts `DELETE`: the webhook is served in-process by
 the operator, so with `failurePolicy: Fail` a `DELETE` rule would let a down
-operator block CR — and thereby namespace — deletion.
+operator block CR (and thereby namespace) deletion.
 
 Both configurations include the annotation:
 
@@ -599,7 +599,7 @@ CRDs in `crds/` with special behavior:
    when the chart version is upgraded.
 
 3. **On uninstall:** Helm does **not** delete CRDs from the `crds/` directory on
-   `helm uninstall`. This is intentional — CRDs are cluster-scoped resources and
+   `helm uninstall`. This is intentional: CRDs are cluster-scoped resources and
    deleting them would destroy all custom resources of that type across all namespaces.
 
 ### CRD Source

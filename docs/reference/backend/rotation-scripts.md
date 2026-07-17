@@ -16,8 +16,8 @@ The Fernet and credential rotation scripts (`fernet_rotate.sh`, `credential_rota
 are embedded in the operator binary via `go:embed` and mounted into CronJob pods as
 immutable, content-hash-named ConfigMaps.
 
-For full reference documentation — including the go:embed pattern, ConfigMap mounting,
-content-hash naming, CronJob volume layout, error handling, and idempotency guarantees —
+For full reference documentation (including the go:embed pattern, ConfigMap mounting,
+content-hash naming, CronJob volume layout, error handling, and idempotency guarantees),
 see the sub-reconciler sections in
 [Keystone Reconciler Architecture](../keystone/keystone-reconciler.md):
 

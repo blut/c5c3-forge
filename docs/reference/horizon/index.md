@@ -11,12 +11,12 @@ shared scaffolding the Keystone operator established (`internal/common`, the
 `operator-library` Helm chart, the parameterized operator image) and proves
 the onboarding path is repeatable.
 
-Horizon's profile is deliberately the thin one among the service operators: a
+Horizon's profile is the thin one among the service operators: a
 stateless Django/WSGI web application with no message bus, no service-catalog
 endpoints of its own, and none of Keystone's db-sync/fernet/bootstrap/upgrade
 machinery. What it needs instead: Memcached for the Django cache, the Keystone
-public endpoint, a shared Django `SECRET_KEY`, pre-built static assets, and —
-uniquely among the services — HTTP ingress by default.
+public endpoint, a shared Django `SECRET_KEY`, pre-built static assets, and
+(uniquely among the services) HTTP ingress by default.
 
 ## Design decisions
 
@@ -31,7 +31,7 @@ The v1 operator resolves the onboarding decisions as follows:
 - **Keystone endpoint: a plain URL field.** `spec.keystoneEndpoint` keeps the
   operator decoupled from the keystone-operator. The c5c3 ControlPlane
   operator derives the value top-down from its Keystone child's naming
-  convention (never from the child's status — no machine consumer reads
+  convention (never from the child's status: no machine consumer reads
   status endpoints).
 - **`SECRET_KEY`: ESO-managed Secret, env-var-injected.** The key is required
   for multi-replica signed-cookie consistency, synced from OpenBao via an

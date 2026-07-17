@@ -10,13 +10,13 @@ SPDX-License-Identifier: Apache-2.0
 # Adding a New Release
 
 This checklist captures everything a new OpenStack release (e.g. `2026.2`)
-touches. Most of the machinery auto-discovers release directories — the CI
+touches. Most of the machinery auto-discovers release directories: the CI
 build/test matrices scan `releases/*/` (`hack/ci-generate-build-matrix.sh`),
 the per-operator release lists derive from `source-refs.yaml` keys
 (`hack/ci-service-image-releases.sh`), Renovate's custom managers glob
 `releases/**` (see [Dependency Management](./dependency-management.md)), and
 Chainsaw discovers new e2e suites recursively. The remainder is a finite,
-hand-enumerated list — work through it top to bottom.
+hand-enumerated list: work through it top to bottom.
 
 The version itself needs no code change: `release.ParseRelease`, the
 ControlPlane CRD `Pattern` marker, and the webhook regexp already accept any
@@ -61,7 +61,7 @@ Create `tests/tempest/keystone-<slug>/` (slug = version with `.` → `-`, e.g.
 
 ::: warning
 `hack/ci-generate-tempest-matrix.sh` fails **every** CI run with
-`::error::Missing Tempest config directory` when this directory is absent —
+`::error::Missing Tempest config directory` when this directory is absent:
 it is the one touch point that blocks the whole pipeline, not just one job.
 :::
 
@@ -72,7 +72,7 @@ Clone `tests/e2e/keystone/basic-deployment-<prev-slug>/` to
 the CR name and database in `00-keystone-cr.yaml`, every
 `keystone-basic-<slug>-*` resource assertion in `chainsaw-test.yaml`, and
 the `ghcr.io/c5c3/keystone:<version>` image reference in the poke command.
-A missed rename silently tests the wrong release — the suite still passes.
+A missed rename silently tests the wrong release: the suite still passes.
 
 The plain `basic-deployment` suite covers the *default* release (its fixture
 pins the default tag), so only non-default releases need a suffixed variant.
@@ -93,7 +93,7 @@ None of these are mechanical; decide and record each in the PR description:
   `tests/e2e/keystone/upgrade-flow/` must test the newest sequential
   transition (second-newest → newest release). The skip-level fixture
   (`upgrade-flow/02-patch-skip-level.yaml`) must keep targeting a version
-  that does **not** exist under `releases/` — that is what makes it a
+  that does **not** exist under `releases/`: that is what makes it a
   rejection test.
 
 ## Removing an old release
@@ -106,7 +106,7 @@ orphans that must go in the same PR:
   not the default)
 - every default-release reference listed above, if it named the old release
 - the `tests/unit/renovate/*_test.sh` probes, which pin a concrete
-  `releases/<version>/` file — repoint them at a surviving release or
+  `releases/<version>/` file: repoint them at a surviving release or
   `make test-shell` breaks
 
 ## Verification

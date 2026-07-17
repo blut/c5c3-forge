@@ -61,7 +61,7 @@ Follow that tutorial through to its final **Verify** step, so the horizon-operat
 
 On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
 `HelmRelease`), so set the chart value by patching that HelmRelease rather than
-running a raw `helm upgrade` — Flux's helm-controller reverts any out-of-band
+running a raw `helm upgrade`: Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
@@ -128,8 +128,8 @@ Horizon CR since the scrape began.
 The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
 e2e kind cluster by the chainsaw suite below (install with
 `monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
-uninstall, assert removal). The end-to-end scrape path — a live Prometheus
-that discovers the ServiceMonitor and marks the target Up — is the
+uninstall, assert removal). The end-to-end scrape path (a live Prometheus
+that discovers the ServiceMonitor and marks the target Up) is the
 `WITH_PROMETHEUS=true` kind bring-up shown in the tip above, not this suite:
 the e2e cluster ships only the prometheus-operator CRDs, not a Prometheus
 instance.

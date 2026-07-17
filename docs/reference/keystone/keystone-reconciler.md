@@ -85,30 +85,30 @@ Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secret
 `spec.bootstrap.adminPasswordSecretRef`) are owned by the ExternalSecret controller,
 not by the Keystone CR, so an owner-reference filter would never match them. The
 mapper therefore combines an indexed reverse lookup with an owner-ref fallback for
-rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer)
+rotation staging Secrets; see [Secret Field Indexer](#secret-field-indexer)
 below. The `MariaDB`, `ClusterSecretStore`, and `SecretStore` watches exist so the operator reacts
 immediately to upstream dependency outages without waiting for the next periodic
 requeue. The `PushSecret` watch plays the same role for the
 OpenBao-backup finalizer loop: without it the finalizer would requeue at the
 `RequeueSecretPolling` (15s) cadence between each `esoPushSecretFinalizer`
 adoption check (Pass-0) and each `DeletionTimestamp` check (Pass-1);
-with it, each stage transition wakes on watch delivery instead — see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper)
+with it, each stage transition wakes on watch delivery instead; see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper)
 below.
 
 The `For(Keystone)` watch carries a predicate
 (`Or(GenerationChangedPredicate, LabelChangedPredicate, AnnotationChangedPredicate, terminating)`)
-so a `Status().Update` — which the controller issues on every reconcile — does
+so a `Status().Update` (which the controller issues on every reconcile) does
 not re-enqueue the CR and spin the loop. The trade-offs are deliberate:
 because the CRD has a status subresource, setting `deletionTimestamp` does
 **not** bump the generation and touches neither labels nor annotations, so the
-dedicated `terminating` predicate admits the live→Terminating transition —
+dedicated `terminating` predicate admits the live→Terminating transition:
 otherwise finalizer cleanup (and `kubectl delete`) would stall until the next
 resync; the operator's own annotation
 patches pass via `AnnotationChangedPredicate`; the 10-minute informer resync on
 the CR itself is filtered, but every `Owns()`/`Watches()` secondary resource
 still resyncs and enqueues the owner, so drift repair is preserved. A future
 feature that must reconcile on CR *status* written by another actor would be
-filtered by this predicate — an intentional part of the contract.
+filtered by this predicate: an intentional part of the contract.
 
 #### Secret Field Indexer
 
@@ -117,7 +117,7 @@ The Keystone controller registers a controller-runtime field indexer on the
 CR(s) via an O(1) cache lookup instead of an unfiltered namespace-scoped List.
 Without the indexer, every Secret create/update/delete event in a namespace
 containing ESO-managed Secrets would force the mapper to List every Keystone CR
-in that namespace — producing API server load that scales linearly with the
+in that namespace: producing API server load that scales linearly with the
 number of Secret events, not with the number of Keystone CRs.
 
 | Aspect | Value |
@@ -153,7 +153,7 @@ including the status-only ticks ESO emits on every successful sync
 `observedGeneration` echo). In a typical deployment ESO syncs each adopted
 PushSecret on its configured `refreshInterval` (default 1h but often
 minutes), which under `Owns()` translates directly into reconcile wake-ups
-the finalizer state machine has nothing to do with — they do not change
+the finalizer state machine has nothing to do with: they do not change
 `Generation`, do not add or remove finalizers, and do not flip
 `DeletionTimestamp`, so each such wake-up is discarded after a Get + status
 diff. Replacing `Owns()` with an explicit `Watches()` plus
@@ -238,7 +238,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 The reconciler applies `commonLabels(keystone)` (`app.kubernetes.io/name`,
 `app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`) to every owned
 resource. In addition, the following forge-specific metadata keys carry
-controller-observable semantics and are stable across releases — consumers
+controller-observable semantics and are stable across releases: consumers
 (watch predicates, chainsaw tests, dashboards) may rely on them:
 
 | Key | Kind | Applied to | Value | Purpose |
@@ -395,7 +395,7 @@ The chain is a table-driven pipeline over the shared scaffolding in
 `Fn`); `commonreconcile.RunPipeline` attempts the steps in order (named steps
 wrapped in `instrumentSubReconciler`, empty-`Name` steps run bare because they
 self-instrument or are intentionally uninstrumented) and the single call site
-funnels every exit path through `updateStatus` by construction:
+funnels every exit path through `updateStatus`:
 
 ```go
 result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
@@ -404,8 +404,8 @@ return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 
 This guarantees:
 
-1. A step error **propagates immediately** — subsequent steps are skipped.
-2. A non-zero result (`!result.IsZero()`) causes an **early return** — status is
+1. A step error **propagates immediately**: subsequent steps are skipped.
+2. A non-zero result (`!result.IsZero()`) causes an **early return**: status is
    persisted and the reconciler exits.
 3. Status conditions from the failing/requeuing step are **always persisted**
    via `updateStatus()` before returning.
@@ -414,7 +414,7 @@ This guarantees:
 They signal failure with a bare `error` rather than a status condition of their
 own, so each wraps its call to flip `SecretsReady=False` (via `markConfigFailed`)
 on failure. Without that, `setReadyCondition` would re-aggregate the still-True
-sub-conditions and persist a stale `Ready=True` at the new generation — the
+sub-conditions and persist a stale `Ready=True` at the new generation: the
 failure would be visible only in logs and the error counter.
 
 The parallel group follows a different contract: all three sub-reconcilers run
@@ -433,7 +433,7 @@ threads that snapshot into `updateStatus`. After aggregating `Ready` and stampin
 `equality.Semantic.DeepEqual` and **skips** `r.Status().Update()` when nothing
 changed. `meta.SetStatusCondition` preserves `LastTransitionTime` on a no-op
 upsert, so a converged steady-state pass produces a byte-identical status and
-issues no write — no write means no watch event and no `resourceVersion` churn.
+issues no write: no write means no watch event and no `resourceVersion` churn.
 A change to any condition, reason, message, or `ObservedGeneration` still writes.
 
 If the status update itself fails, the
@@ -472,11 +472,11 @@ clients can detect stale status.
 
 The pipeline uses two parallel groups, each driven by `reconcileParallelGroup`:
 
-- **Group 1** — `reconcileFernetKeys`, `reconcileCredentialKeys`, and
-  `reconcileNetworkPolicy` — runs after `reconcileConfig` completes and before
+- **Group 1**: `reconcileFernetKeys`, `reconcileCredentialKeys`, and
+  `reconcileNetworkPolicy`, run after `reconcileConfig` completes and before
   `reconcileDatabase` begins.
-- **Group 2** — `reconcileHTTPRoute`, `reconcileHealthCheck`, `reconcileHPA`,
-  `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
+- **Group 2**: `reconcileHTTPRoute`, `reconcileHealthCheck`, `reconcileHPA`,
+  `reconcileBootstrap`, and `reconcileTrustFlush`, run after
   `reconcileDeployment` and config pruning. Once the Deployment/Service and the
   config ConfigMap exist, these five share no data dependency on each other.
 
@@ -544,7 +544,7 @@ Key constraints that prevent further parallelization:
 - **reconcileDatabase** has a multi-step state machine (MariaDB CRs → db_sync Job →
   schema-check Job) with 30s requeue waits, and `reconcileDeployment` depends on the
   database being ready.
-- **reconcilePolicyValidation** must gate `reconcileDeployment` — invalid policy
+- **reconcilePolicyValidation** must gate `reconcileDeployment`: invalid policy
   overrides must be caught before reaching running pods.
 - **reconcilePasswordRotation** stays sequential after group 2 because it depends
   on Bootstrap having seeded the initial admin credential.
@@ -552,7 +552,7 @@ Key constraints that prevent further parallelization:
 #### DeepCopy Condition Merge Pattern
 
 Each parallel sub-reconciler receives its own `DeepCopy` of the Keystone CR. This
-eliminates shared mutable state by construction — `conditions.SetCondition` writes to
+eliminates shared mutable state: `conditions.SetCondition` writes to
 the copy's `Status.Conditions` slice, not the original. No `sync.Mutex` is needed.
 
 ```text
@@ -606,8 +606,8 @@ g, gctx := errgroup.WithContext(ctx)
 ```
 
 The error returned by `g.Wait()` is returned as the `Reconcile` error, triggering
-controller-runtime's exponential backoff. Conditions from all completed goroutines —
-including those that succeeded before the error — are merged before returning.
+controller-runtime's exponential backoff. Conditions from all completed goroutines
+(including those that succeeded before the error) are merged before returning.
 
 #### Requeue Resolution
 
@@ -636,7 +636,7 @@ MariaDB `Database`, `User`, and `Grant` CRs owned by the Keystone are
 deterministically torn down **before** the Keystone CR itself is removed from
 etcd. Without a finalizer, the Keystone CR would be deleted
 immediately on `kubectl delete keystone <name>` and the controller would have
-no opportunity to clean up the MariaDB resources it orchestrated — leaving them
+no opportunity to clean up the MariaDB resources it orchestrated: leaving them
 orphaned when redeploying or tearing down the service.
 
 ### Finalizer Constant
@@ -670,7 +670,7 @@ CRs (all matched by the Keystone CR's `metadata.name` in the same
 These three CRs are the only resources the finalizer manages. Every other
 resource owned by the Keystone CR (Deployment, Service, ConfigMap, Secret,
 Job, CronJob, PDB, HPA, NetworkPolicy) is reclaimed by the built-in Kubernetes
-garbage collector via owner references — the finalizer does not touch them.
+garbage collector via owner references: the finalizer does not touch them.
 See [Owned Resources](#owned-resources) for the full owner-reference list.
 
 ### Reconcile Branching on DeletionTimestamp
@@ -689,7 +689,7 @@ Fetch Keystone CR
 Running sub-reconcilers against a Terminating CR is not safe: sub-reconcilers
 such as `reconcileDatabase` would re-create the very MariaDB CRs the finalizer
 is deleting, producing an infinite reconcile loop. The early branch avoids
-this entirely — Terminating CRs only ever flow through `reconcileDelete`.
+this entirely: Terminating CRs only ever flow through `reconcileDelete`.
 
 On the live-CR path, `controllerutil.AddFinalizer` is called if the finalizer
 is missing and the CR is `Update`d, followed by an early `Requeue: true`
@@ -723,7 +723,7 @@ pass:
 3. **Cleanup.** `finalizeDatabaseResources` issues `Delete` for each of
    `Database`, `User`, `Grant` and returns as soon as every Delete is accepted
    (or tolerated as NotFound). It does **not** block on the MariaDB operator
-   completing its own teardown — see
+   completing its own teardown; see
    [Why the finalizer does not wait](#why-the-finalizer-does-not-wait).
 4. **Finalizer release.** A Normal Event with reason `DatabaseFinalized` is
    emitted, the finalizer is removed via `controllerutil.RemoveFinalizer`, and
@@ -741,7 +741,7 @@ concurrent Keystone deletions (chainsaw `parallel: 4`) this created a deadlock:
    `Deployment`, so the `keystone` Pod kept its MariaDB connections open.
 3. The MariaDB operator could not run `DROP DATABASE` while connections were
    live, so the `Database` CR stayed in Terminating state.
-4. Goto 1 — the finalizer never released, the 2 min `delete:` timeout in the
+4. Goto 1: the finalizer never released, the 2 min `delete:` timeout in the
    `deletion-cleanup` chainsaw test expired, and cascading test cleanups
    stacked up behind the same block.
 
@@ -757,7 +757,7 @@ still reclaimed.
 ### NotFound Tolerance and Idempotency
 
 `Delete` on an absent MariaDB CR returns `NotFound`, which
-`finalizeDatabaseResources` logs at `V(1)` and treats as success — the CR was
+`finalizeDatabaseResources` logs at `V(1)` and treats as success: the CR was
 already garbage-collected, externally deleted, or never existed.
 
 This tolerance makes `finalizeDatabaseResources` **idempotent**: calling it
@@ -778,18 +778,18 @@ surfacing spurious errors or Events.
 ### Brownfield No-Op Behaviour
 
 Brownfield deployments (`spec.database.host` set, `spec.database.clusterRef`
-nil) never create MariaDB CRs — the operator connects to a pre-existing
+nil) never create MariaDB CRs: the operator connects to a pre-existing
 external MariaDB cluster. The finalizer path is intentionally **branch-free**:
 brownfield CRs still receive the finalizer on first reconcile and still flow
 through `reconcileDelete` on deletion, but every `Delete` call is a no-op
 NotFound. Consequences:
 
-- The finalizer is removed in the same reconcile pass that observes deletion —
+- The finalizer is removed in the same reconcile pass that observes deletion:
   the same pass-count as managed mode after the wait was removed.
 - No `FinalizingDatabase` event is emitted (there is no real cleanup work to
-  announce — `hasLiveMariaDBResources` returns `false` because the probe
+  announce: `hasLiveMariaDBResources` returns `false` because the probe
   observes zero live MariaDB CRs).
-- A `DatabaseFinalized` event **is** emitted — it is the common signal that
+- A `DatabaseFinalized` event **is** emitted: it is the common signal that
   the finalizer has released the CR.
 - No spurious NotFound errors reach the user.
 
@@ -804,7 +804,7 @@ finalizers gain the finalizer on their next reconcile under the new version:
 1. The live-CR branch sees `ContainsFinalizer == false`, calls
    `AddFinalizer` + `Update`, and requeues.
 2. The next reconcile observes the persisted finalizer and proceeds through
-   the normal sub-reconciler pipeline — `Status` and existing conditions are
+   the normal sub-reconciler pipeline: `Status` and existing conditions are
    unchanged by the finalizer addition itself.
 3. On subsequent deletion, the full cleanup flow runs as described above.
 
@@ -830,7 +830,7 @@ cleanup, captured via `record.EventRecorder`:
 > [Brownfield No-Op Behaviour](#brownfield-no-op-behaviour) for the full
 > state-machine reasoning.
 
-No `Warning` Event is emitted on cleanup errors — controller-runtime retries
+No `Warning` Event is emitted on cleanup errors: controller-runtime retries
 the reconcile with exponential backoff and the underlying API error is logged
 via `log.FromContext(ctx)`. Error-level Events would only add noise to a retry
 loop that already has a structured-logging record.
@@ -845,7 +845,7 @@ Every MariaDB CR created by `reconcileDatabase` already carries an
 `ownerReference` to the Keystone CR (via
 `controllerutil.SetControllerReference` in `internal/common/database/database.go`).
 Kubernetes' built-in garbage collector would normally suffice to cascade the
-deletion. The finalizer is deliberately additive, not a replacement:
+deletion. The finalizer is additive, not a replacement:
 
 | Mechanism | What it guarantees |
 | --- | --- |
@@ -866,7 +866,7 @@ finalizer that drives cleanup of the backup PushSecrets ESO uses to persist
 the Fernet and credential signing keys to OpenBao. Without this
 finalizer, deleting a Keystone CR would garbage-collect the PushSecret CRs
 via owner references **without** triggering the remote delete on the KV-v2
-path — leaving stale cryptographic material in OpenBao after the Keystone
+path: leaving stale cryptographic material in OpenBao after the Keystone
 CR is gone. The two finalizers are independent: each is installed, tracked,
 and released by its own handler, and they can complete in either order.
 
@@ -900,19 +900,19 @@ The names are produced by `openBaoBackupPushSecretNames(keystone)` so that
 adding a third backup target in the future is a one-line change. Both
 PushSecrets share a single builder convention in `reconcile_fernet.go` and
 `reconcile_credential.go` respectively; neither carries secret material of
-its own — the live `Secret` referenced by `Spec.Selector.Secret.Name` is the
+its own: the live `Secret` referenced by `Spec.Selector.Secret.Name` is the
 source of truth, and the PushSecret is the control-plane object that tells
 ESO what to push (and, on deletion, what to purge).
 
 The finalizer does **not** touch any other Keystone-owned resource
 (Deployment, ConfigMap, Service, CronJob, etc.). Those are reclaimed by the
-built-in Kubernetes garbage collector via owner references — see
+built-in Kubernetes garbage collector via owner references; see
 [Owned Resources](#owned-resources).
 
 > **Path scoping:** Both KV-v2 paths are per-CR-scoped via
 > `openstack/keystone/{keystone.Namespace}/{keystone.Name}/<leaf>` (where `<leaf>`
-> is `fernet-keys` or `credential-keys`), so multiple Keystone CRs — in the same
-> namespace or across namespaces — write to disjoint paths and cannot collide. The
+> is `fernet-keys` or `credential-keys`), so multiple Keystone CRs (in the same
+> namespace or across namespaces) write to disjoint paths and cannot collide. The
 > leading `{keystone.Namespace}` segment was the most recent addition, layered on
 > top of an earlier per-name scoping. See
 > [Migration note: legacy flat paths](#migration-note-legacy-flat-paths)
@@ -934,11 +934,11 @@ The KV-v2 path layout for these backups has evolved in two steps:
    `kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/fernet-keys`
    and `…/{keystone.Namespace}/{keystone.Name}/credential-keys`.
 
-The RemoteKey change lands the moment the Keystone operator is upgraded —
+The RemoteKey change lands the moment the Keystone operator is upgraded:
 the next reconcile of each Keystone CR emits the new path. A standalone
 Keystone's Fernet/credential backup PushSecrets authenticate as the per-tenant
 `eso-tenant` identity through a namespaced `openbao-tenant-store` SecretStore, so
-for existing clusters that identity and store must be in place — otherwise ESO
+for existing clusters that identity and store must be in place: otherwise ESO
 will return `403` on the backup step and `FernetKeysReady` /
 `CredentialKeysReady` will flip to `False`. The write authorisation comes from
 the `eso-tenant` policy (`deploy/openbao/policies/eso-tenant.hcl`), whose paths
@@ -962,7 +962,7 @@ entries simply stop being refreshed, never get deleted by
 are otherwise inert.
 
 Operators who want a clean OpenBao state can purge the superseded entries
-manually after upgrade — both the original flat paths and the
+manually after upgrade: both the original flat paths and the
 per-name (namespace-less) paths:
 
 ```sh
@@ -989,7 +989,7 @@ policy (`deploy/openbao/policies/eso-tenant.hcl`), templated to the caller's own
 namespace. Re-run `deploy/openbao/bootstrap/setup-auth.sh` and
 `deploy/openbao/bootstrap/setup-policies.sh` (or `hack/deploy-infra.sh`) and
 provision the namespaced store with
-`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>` — otherwise ESO
+`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>`: otherwise ESO
 returns `403` on the push and `PasswordRotationReady` flips to `False`. The
 legacy `bootstrap/keystone-admin` object is **orphaned but harmless** after
 migration and can be purged once the per-CR path is populated and Ready:
@@ -1036,7 +1036,7 @@ installs a cleanup finalizer on the PushSecret, holds the object in
 Terminating state until the remote delete succeeds, then releases its
 finalizer so the API server garbage-collects the PushSecret.
 
-This means the Keystone finalizer does not need OpenBao credentials — the
+This means the Keystone finalizer does not need OpenBao credentials: the
 single component that talks to OpenBao is still ESO, and the abstraction
 boundary (the selected secret store, policy, auth) stays in one place. The
 Keystone finalizer's responsibility is purely ordering: ensure the Delete
@@ -1062,7 +1062,7 @@ Fetch Keystone CR
 Running sub-reconcilers against a Terminating CR would be unsafe:
 `reconcileFernetKeys` and `reconcileCredentialKeys` build the live `Secret`
 and the backup `PushSecret` on every pass, and would therefore re-create
-the PushSecrets the finalizer just deleted — classic infinite reconcile
+the PushSecrets the finalizer just deleted: classic infinite reconcile
 loop. The early branch avoids this entirely.
 
 On the live-CR path, `controllerutil.AddFinalizer(keystone, keystoneOpenBaoFinalizer)`
@@ -1087,7 +1087,7 @@ The deletion handler proceeds as follows:
 1. **No-op guard.** If the Keystone CR does not carry
    `keystoneOpenBaoFinalizer` (e.g. a CR that predates the finalizer, or whose
    finalizer was already released on a prior pass), `reconcileDeleteOpenBao`
-   returns `(ctrl.Result{}, nil)` immediately — no Delete calls, no Events.
+   returns `(ctrl.Result{}, nil)` immediately: no Delete calls, no Events.
 2. **Cleanup-work announcement.** `hasLiveOpenBaoBackupPushSecrets` probes
    whether any backup PushSecret is still live (exists *and*
    `DeletionTimestamp == 0`). If so, a single Normal Event with reason
@@ -1105,15 +1105,15 @@ The deletion handler proceeds as follows:
      record `SecretsReady=False / WaitingForESOAdoption` via
      `setOpenBaoWaitingForESOAdoptionCondition`, and return **without**
      firing any `Delete`. This closes the race where a Keystone CR
-     deleted seconds after creation outruns ESO's first reconcile — a
+     deleted seconds after creation outruns ESO's first reconcile: a
      racing `Delete` would remove the PushSecret object outright before
      ESO had a chance to install `DeletionPolicy=Delete`, orphaning the
      kv-v2 path in OpenBao (see
      [Three-pass lifecycle with two blocked states](#three-pass-lifecycle-with-two-blocked-states)).
      The wait is **bounded** by `OpenBaoAdoptionWaitTimeout` (10m): once the
      CR has been deleting longer than that, an unadopted PushSecret stops
-     blocking — the handler emits an `ESOAdoptionTimedOut` Warning event and
-     proceeds to Pass-1's `Delete` — so a renamed or absent ESO finalizer
+     blocking: the handler emits an `ESOAdoptionTimedOut` Warning event and
+     proceeds to Pass-1's `Delete`, so a renamed or absent ESO finalizer
      cannot hang CR deletion forever at `WaitingForESOAdoption`.
    - **Pass-1 — parallel Delete.** Issue `Delete` on every backup
      PushSecret (tolerating `NotFound`), so ESO's cleanup finalizers
@@ -1141,8 +1141,8 @@ The deletion handler proceeds as follows:
 
 ### Why the finalizer waits
 
-Unlike the MariaDB finalizer (which deliberately does **not** wait for the
-MariaDB CRs to disappear from etcd — see
+Unlike the MariaDB finalizer (which does **not** wait for the
+MariaDB CRs to disappear from etcd; see
 [Why the finalizer does not wait](#why-the-finalizer-does-not-wait)), the
 OpenBao finalizer **must** wait for the PushSecrets to be fully
 garbage-collected. The asymmetry is driven by the cleanup mechanism:
@@ -1156,7 +1156,7 @@ garbage-collected. The asymmetry is driven by the cleanup mechanism:
   released before ESO has finished its own teardown, and if ESO then fails
   for any reason (auth revoked, OpenBao unreachable, operator crashed), the
   PushSecret may be garbage-collected by the API server while the remote
-  path still exists — leaking cryptographic material.
+  path still exists: leaking cryptographic material.
 
 Waiting on the re-`Get` therefore provides the critical guarantee:
 "Keystone CR gone" implies "remote KV-v2 path purged (or ESO has surfaced
@@ -1177,7 +1177,7 @@ This tolerance makes `finalizeOpenBaoSecrets` **idempotent**: calling it
 twice in a row with no PushSecrets present returns `(true, nil)` both
 times and issues a second batch of Delete calls that are all no-op
 NotFounds. The reconcile pass that first observes `done=true` is the only
-one that emits `OpenBaoSecretsFinalized` and calls `RemoveFinalizer` — no
+one that emits `OpenBaoSecretsFinalized` and calls `RemoveFinalizer`: no
 duplicate Events are produced under requeue loops. Idempotency matters
 because:
 
@@ -1215,7 +1215,7 @@ The three passes execute in strict order:
    first unadopted PushSecret it records `WaitingForESOAdoption` and
    returns `(done=false, nil)` **without** firing any `Delete`. This wait is
    bounded by `OpenBaoAdoptionWaitTimeout` (10m): past that deadline the
-   unadopted PushSecret no longer blocks — the handler emits an
+   unadopted PushSecret no longer blocks: the handler emits an
    `ESOAdoptionTimedOut` Warning and breaks to Pass-1's force-`Delete`. The
    force-delete stays safe when ESO merely renamed its finalizer (the
    PushSecret carries the renamed finalizer, so `Delete` only marks it
@@ -1236,13 +1236,13 @@ Without Pass-0, a Keystone CR deleted within 1–2 s of creation can outrun
 ESO's first reconcile: the operator calls `Delete` on the PushSecret
 before ESO has installed its own cleanup finalizer, the API server
 immediately garbage-collects the PushSecret object, and ESO never observes
-the `DeletionTimestamp` — so `DeletionPolicy=Delete` never runs and the
+the `DeletionTimestamp`, so `DeletionPolicy=Delete` never runs and the
 referenced kv-v2 path is orphaned in OpenBao. The observed stuck path now
 takes the per-CR form `kv-v2/openstack/keystone/{namespace}/{name}/fernet-keys`;
 this was originally seen in CI run 24842115250 against the
 now-legacy flat path
 `kv-v2/openstack/keystone/fernet-keys`. The race itself is path-shape
-independent — the only difference is the kv-v2 key that would be left
+independent: the only difference is the kv-v2 key that would be left
 orphaned without Pass-0. Pass-0 gates the operator's `Delete` on ESO having
 signalled adoption by installing its cleanup finalizer, so the race
 collapses into an observable `WaitingForESOAdoption` state that resolves
@@ -1253,12 +1253,12 @@ on the next ESO reconcile instead of a silent leak.
 Both `{name}-fernet-keys-backup` (Fernet token-signing material) and
 `{name}-credential-keys-backup` (credential-encryption keys) are covered
 by the same three-pass handler via the single `openBaoBackupPushSecretNames`
-iteration — there are no per-resource branches. A mixed adoption state
+iteration: there are no per-resource branches. A mixed adoption state
 (one PushSecret adopted by ESO, the other not) blocks on the unadopted
 resource in Pass-0 and fires **zero** `Delete` calls in that pass, so
 the existing Pass-1 "fire all deletes in parallel" property is preserved
 once adoption is confirmed. Adding a third backup target in the future
-remains a one-line change in `openBaoBackupPushSecretNames` — Pass-0,
+remains a one-line change in `openBaoBackupPushSecretNames`: Pass-0,
 Pass-1, and Pass-2 all iterate the same list.
 
 ### SecretsReady=False / WaitingForESOAdoption
@@ -1287,7 +1287,7 @@ No `Warning` Event is emitted for this state. The structured log line
 `openbao finalizer waiting for ESO adoption` is produced at `V(1)` with
 `pushsecret=<name>`, and the `SecretsReady=False` condition is the
 primary observability signal. `reconcileDeleteOpenBao` returns
-`ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15 s — see
+`ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15 s, see
 `requeue_intervals.go`) on `(done=false, nil)`, so the adoption wait is
 actively polled every 15 s until ESO installs its cleanup finalizer.
 The handler never force-deletes: if ESO is permanently broken, the
@@ -1311,7 +1311,7 @@ surface the blocked state:
 The message names the specific PushSecret (first stuck one encountered)
 so `kubectl get keystone -o yaml` surfaces which backup is wedged without
 attaching a debugger. Reusing `SecretsReady` (instead of introducing a new
-condition type) keeps the status surface coherent — any secret-store
+condition type) keeps the status surface coherent: any secret-store
 lifecycle concern (initial ExternalSecret sync, ClusterSecretStore
 health, finalizer teardown) appears under the same condition type.
 The condition is persisted through
@@ -1320,7 +1320,7 @@ requeues at the `RequeueSecretPolling` (15s) interval.
 
 The condition clears together with the Keystone CR itself: once both
 PushSecrets are `NotFound`, `reconcileDeleteOpenBao` removes the finalizer
-and the CR is garbage-collected. There is no explicit "clearing" write —
+and the CR is garbage-collected. There is no explicit "clearing" write:
 the condition disappears when its owning object is reaped.
 
 No `Warning` Event is emitted for the blocked state. Controller-runtime
@@ -1374,7 +1374,7 @@ but GC alone is insufficient here:
 | OpenBao finalizer | Keystone CR is removed **only after** both PushSecrets are confirmed `NotFound`, guaranteeing the remote purge has actually run |
 
 Without the finalizer, cascade-deletion of the PushSecret would race
-against ESO's own reconciliation — the PushSecret object could be
+against ESO's own reconciliation: the PushSecret object could be
 garbage-collected by the API server before ESO has had a chance to run its
 `DeletionPolicy=Delete` path. The finalizer's `Delete` + re-`Get` loop
 forces the ordering to be deterministic and observable.
@@ -1397,7 +1397,7 @@ sub-reconciler is responsible for:
 Every `conditions.SetCondition` call **must** include `ObservedGeneration: keystone.Generation`
 so that external tooling (ArgoCD health checks, status controllers) can distinguish whether
 a condition reflects the current spec or a stale generation. This applies to both
-`True` and `False` condition paths — no condition may omit the field.
+`True` and `False` condition paths: no condition may omit the field.
 
 ```go
 conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -1453,7 +1453,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 ```
 
 **Purpose:** Verify that ESO has synced credentials from OpenBao before proceeding.
-This sub-reconciler does not create any resources — it only checks readiness of
+This sub-reconciler does not create any resources: it only checks readiness of
 ExternalSecrets managed by the External Secrets Operator.
 
 **Checks (in order):**
@@ -1487,7 +1487,7 @@ shared cluster store `openbao-cluster-store`), and gated with the store-ref-awar
 causing controller-runtime exponential backoff.
 
 **Shared library calls:** `secrets.GateStoreReady()` (which calls
-`secrets.IsStoreRefReady()` — cluster stores via `IsClusterSecretStoreReady`,
+`secrets.IsStoreRefReady()`: cluster stores via `IsClusterSecretStoreReady`,
 namespaced stores via `IsSecretStoreReady`), `secrets.WaitForExternalSecret()`
 
 ---
@@ -1546,10 +1546,10 @@ schema matches the expected Alembic migration head. See
 | `False` | `SchemaDriftDetected` | "schema-check job failed: {error}" | — (error returned) |
 | `True` | `DatabaseSynced` | "Database schema is up to date (revision verified)" | — |
 
-**Error handling:** Errors from the shared provisioning and sync flows —
-`database.ReconcileProvision()` and `database.ReconcileSyncJobs()`, which run
+**Error handling:** Errors from the shared provisioning and sync flows
+(`database.ReconcileProvision()` and `database.ReconcileSyncJobs()`, which run
 `database.EnsureDatabase()`/`EnsureDatabaseUser()` and `job.RunJob()` (db_sync,
-schema-check) internally — are wrapped with context and returned. The
+schema-check) internally) are wrapped with context and returned. The
 `DBSyncFailed` condition is set before returning the error so that the failure
 reason is visible in the CR status.
 
@@ -1559,7 +1559,7 @@ provisioning: cluster gate, `EnsureDatabase`/`EnsureDatabaseUser`) and
 The expand-migrate-contract upgrade branch between them stays keystone-private.
 
 **Dynamic credentials mode:** when `spec.database.credentialsMode: Dynamic`, the
-OpenBao database engine owns the DB user lifecycle — it issues short-lived MySQL
+OpenBao database engine owns the DB user lifecycle: it issues short-lived MySQL
 users on demand and revokes them at lease end. The provisioning flow
 (`database.ReconcileProvision()`) therefore **skips**
 `database.EnsureDatabaseUser()` (no MariaDB `User`/`Grant` CR is provisioned)
@@ -1601,7 +1601,7 @@ and disaster recovery backup to OpenBao.
    targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` in the store the
    Keystone selected via `spec.secretStoreRef` (default cluster store `openbao-cluster-store`;
    its store ref is built by `secrets.PushSecretStoreRefs`). Switching the ref updates the
-   PushSecret in place — the name and OpenBao RemoteKey are unchanged — so the irreplaceable
+   PushSecret in place (the name and OpenBao RemoteKey are unchanged), so the irreplaceable
    fernet key material is moved to the new store, never re-created.
 
 **Key Generation:**
@@ -1660,11 +1660,11 @@ enable kube-apiserver caching optimizations.
 
 **Error handling:** Errors from Secret creation, RBAC ensure, script ConfigMap creation,
 CronJob ensure, or PushSecret ensure are wrapped with context and returned directly.
-No requeue delays — errors trigger controller-runtime exponential backoff.
+No requeue delays: errors trigger controller-runtime exponential backoff.
 
 **Idempotency:** If the `{name}-fernet-keys` Secret already exists, it is not
 modified. This prevents overwriting keys that have been rotated by the CronJob.
-The script ConfigMap uses content-based naming — if the script has not changed,
+The script ConfigMap uses content-based naming: if the script has not changed,
 `config.CreateImmutableConfigMap()` returns the existing ConfigMap name without
 creating a new one.
 
@@ -1676,7 +1676,7 @@ creating a new one.
 The Fernet rotation path separates the **compute** of new keys (performed by
 the rotation CronJob) from the **write** onto the production Secret
 (performed by the operator). The CronJob ServiceAccount has no verb that can
-mutate the production `{name}-fernet-keys` Secret — eliminating the
+mutate the production `{name}-fernet-keys` Secret: eliminating the
 token-forgery primitive from the CronJob's attack surface.
 
 **Staging Secret naming.** Per `fernetStagingSecretName`, the staging Secret
@@ -1690,8 +1690,8 @@ operator via `ensureFernetStagingSecret`:
 **Completion annotation contract.** The CronJob's `fernet_rotate.sh` PATCH
 writes **both** the new `data` map and the
 `forge.c5c3.io/rotation-completed-at` annotation in a single atomic
-strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00","Z")`
-— an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
+strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00","Z")`,
+an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
 treats the annotation as the **single-shot commit marker**: it never rewrites
 the production Secret unless the annotation is present and parses cleanly.
 
@@ -1722,7 +1722,7 @@ will no-op until the next CronJob run writes a new annotation timestamp.
 the `applyRotationOutput` GET-then-`Update` round-trip under the
 controller-owned `ResourceVersion`, which guarantees optimistic concurrency
 (a concurrent writer triggers a 409 Conflict and the reconciler requeues).
-The Update fully replaces the map — stale key indices absent from the staging
+The Update fully replaces the map: stale key indices absent from the staging
 payload (e.g. those renumbered by `keystone-manage fernet_rotate` or trimmed
 by a reduction in `spec.fernet.maxActiveKeys`) are removed, which is the
 atomic-swap semantic the rotation flow requires. A strategic-merge PATCH on this field
@@ -1740,7 +1740,7 @@ Secrets, with strictly disjoint capabilities:
 | Operator ServiceAccount | Secret `{name}-fernet-keys-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
 
 The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on
-either Secret — only `get` (both) and `patch` (staging only). Chainsaw tests
+either Secret: only `get` (both) and `patch` (staging only). Chainsaw tests
 in `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml` assert this
 exact verb split.
 
@@ -1776,7 +1776,7 @@ with credential migration, and disaster recovery backup to OpenBao.
    targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` in the store the
    Keystone selected via `spec.secretStoreRef` (default cluster store `openbao-cluster-store`;
    its store ref is built by `secrets.PushSecretStoreRefs`). Switching the ref updates the
-   PushSecret in place — the name and OpenBao RemoteKey are unchanged — so the irreplaceable
+   PushSecret in place (the name and OpenBao RemoteKey are unchanged), so the irreplaceable
    credential key material is moved to the new store, never re-created.
 
 **Key Generation:**
@@ -1836,7 +1836,7 @@ description in that section for details on content-hash naming and immutability.
 
 **Error handling:** Errors from Secret creation, RBAC ensure, script ConfigMap creation,
 CronJob ensure, or PushSecret ensure are wrapped with context and returned directly.
-No requeue delays — errors trigger controller-runtime exponential backoff.
+No requeue delays: errors trigger controller-runtime exponential backoff.
 
 **Idempotency:** If the `{name}-credential-keys` Secret already exists, it is not
 modified. This prevents overwriting keys that have been rotated by the CronJob.
@@ -1861,14 +1861,14 @@ owned by the operator via `ensureCredentialStagingSecret`:
 
 **Completion annotation contract.** `credential_rotate.sh` runs
 `keystone-manage credential_rotate` and then `keystone-manage credential_migrate`
-(in that order — migrate re-encrypts existing stored credentials with the new
+(in that order: migrate re-encrypts existing stored credentials with the new
 primary key) before emitting a single atomic PATCH that sets both `data`
 and the `forge.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
 suffix). As with Fernet, the annotation is the single-shot commit marker;
 absence or malformed format blocks the operator's apply path.
 
 **Operator validation rules.** Identical to Fernet, with one parameter
-difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
+difference, `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
 
 - **Key count:** `[3, normalizedCredentialMaxActiveKeys(keystone)+1]` inclusive. `ErrKeyCountOutOfRange` on violation.
 - **Key format:** 44-byte base64url decoding to 32 bytes. `ErrInvalidKeyFormat` on violation.
@@ -1884,12 +1884,12 @@ verbatim, issues an `Update`, deletes the staging Secret, and emits a
 Normal event `CredentialKeysRotated`. Because the CronJob already ran
 `credential_migrate` before PATCHing staging, every credential row in the
 database is re-encrypted with the new primary by the time the operator
-commits the Secret swap — no data loss when old keys age out.
+commits the Secret swap: no data loss when old keys age out.
 
 > **Key-rollover window.** There
 > is a ~60s window between `credential_migrate` completion and the kubelet
 > refreshing the in-place Secret projection. During that window,
-> running Keystone pods still have the old credential keyset mounted —
+> running Keystone pods still have the old credential keyset mounted:
 > database rows are already encrypted under the new primary, but the pods
 > cannot decrypt them yet. This is an inherent property of the rotation
 > flow and is tracked as a known limitation; it should be considered when
@@ -1914,7 +1914,7 @@ staging Secrets:
 | Operator ServiceAccount | Secret `{name}-credential-keys-rotation` (staging) | `get`, `create`, `update`, `patch`, `delete`, `list`, `watch` | Cluster-scoped core `secrets` verbs |
 
 The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on
-either Secret — only `get` (both) and `patch` (staging only). Chainsaw tests
+either Secret: only `get` (both) and `patch` (staging only). Chainsaw tests
 in `tests/e2e/keystone/credential-rotation/chainsaw-test.yaml` assert this
 exact verb split.
 
@@ -1935,7 +1935,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context,
 ConfigMap with a content-hash suffix. Returns the ConfigMap name for use by
 `reconcileDeployment`.
 
-> **Note:** This sub-reconciler has a different signature — it returns
+> **Note:** This sub-reconciler has a different signature: it returns
 > `(string, error)` instead of `(ctrl.Result, error)`, and `reconcileConfig`
 > itself sets no status condition and requests no requeue. Its pipeline step
 > wraps the call so that a failure flips `SecretsReady=False` (via
@@ -2051,7 +2051,7 @@ deviates from the template sketched in the design brief on two points,
 and the deviation is locked in by
 `TestReconcileConfig_LoggingJSONPlusPerLoggerLevels`:
 
-- The `[loggers]` section emits `keys = root` only — there is no
+- The `[loggers]` section emits `keys = root` only: there is no
   `[logger_keystone]` (or any other named-logger) subsection. This makes
   `spec.logging.perLoggerLevels` (rendered as `[DEFAULT].default_log_levels`)
   the single config surface that owns per-logger filtering. Splitting that
@@ -2064,7 +2064,7 @@ and the deviation is locked in by
   `spec.logging.level` for all records that do not also clear an explicit
   per-handler filter.
 
-These shape constraints are intentional and load-bearing — do not "fix" the
+These shape constraints are intentional: do not "fix" the
 renderer to match the original four-section template without first updating
 the corresponding test invariants.
 
@@ -2300,14 +2300,14 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context,
 after the Deployment has rolled out successfully. This prevents unbounded accumulation
 of `{name}-config-{hash}` ConfigMaps in the namespace.
 
-> **Note:** This is not a sub-reconciler — it does not set any status condition and
+> **Note:** This is not a sub-reconciler: it does not set any status condition and
 > returns only `error`. It is a thin wrapper around `config.PruneImmutableConfigMaps`
 > that derives the `baseName` from the Keystone CR name and passes the hardcoded
 > retain count.
 
 **Placement rationale:** Pruning runs after `reconcileDeployment` returns ready to
 ensure all pods are running the new configuration before old ConfigMaps are deleted.
-During a rolling update, old ReplicaSet pods still reference the previous ConfigMap —
+During a rolling update, old ReplicaSet pods still reference the previous ConfigMap:
 pruning before Deployment readiness could delete a ConfigMap that is still mounted.
 
 **Parameters:**
@@ -2374,7 +2374,7 @@ route that attaches the Keystone Service to it. Four lifecycle paths:
    CRD presence check in `SetupWithManager` found no mapping for
    `HTTPRoute.gateway.networking.k8s.io/v1`, so the `Owns(HTTPRoute)` watch
    was skipped. When `spec.gateway` is nil, set `HTTPRouteReady=True` with
-   reason `HTTPRouteNotRequired` (no delete attempt — `c.Delete` would fail
+   reason `HTTPRouteNotRequired` (no delete attempt: `c.Delete` would fail
    with `no matches for kind`). When `spec.gateway` is set, set
    `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` and a message
    pointing the user at the missing CRD; the operator otherwise keeps
@@ -2397,7 +2397,7 @@ route that attaches the Keystone Service to it. Four lifecycle paths:
 **Placement rationale:** Runs after `reconcileDeployment` + `pruneStaleConfigMaps`
 so the backend Service (`{name}`) is guaranteed to exist before the HTTPRoute
 references it, and before `reconcileHealthCheck` reads `status.endpoint`. The
-route is deliberately not part of `reconcileParallelGroup` because it has a
+route is not part of `reconcileParallelGroup` because it has a
 transitive dependency on the Service created by `reconcileDeployment`.
 
 **HTTPRoute Construction (`buildKeystoneHTTPRoute`):**
@@ -2423,7 +2423,7 @@ transitive dependency on the Service created by `reconcileDeployment`.
 update, the `Spec` is overwritten with the desired state, `labels` and
 `annotations` are merged additively so user-added metadata is preserved while
 operator-managed keys remain authoritative, and the owner reference is
-re-asserted. `apiequality.Semantic.DeepEqual` guards against no-op writes —
+re-asserted. `apiequality.Semantic.DeepEqual` guards against no-op writes:
 `client.Update` is called only when `Spec`, labels, annotations, or owner
 references actually changed. Empty maps are normalized to nil via
 `hrNormalizeMap` so nil-vs-empty does not trigger a spurious diff.
@@ -2457,7 +2457,7 @@ returns `https://{hostname}/v3`; otherwise it returns the cluster-local
 `http://{name}.{namespace}.svc.cluster.local:5000/v3`. The gateway path
 prefix from `spec.gateway.path` is used for HTTPRoute routing only; it is not
 appended to `status.endpoint`. The `https` scheme is emitted unconditionally
-when a gateway hostname is configured — gateways are the public-ingress hop
+when a gateway hostname is configured: gateways are the public-ingress hop
 and terminate TLS.
 
 **Interaction with `reconcileNetworkPolicy`:** When `spec.gateway`
@@ -2475,7 +2475,7 @@ independent of `spec.gateway`.
 "ensuring HTTPRoute" context; errors from `deleteHTTPRoute()` with "deleting
 HTTPRoute"; the post-ensure `Get` with "getting HTTPRoute {ns}/{name}". All
 are returned directly to controller-runtime for exponential backoff.
-Acceptance failures are **not** returned as errors — they set a False
+Acceptance failures are **not** returned as errors: they set a False
 condition and requeue at a fixed interval.
 
 **Shared library calls:** none. All helpers (`ensureHTTPRoute`,
@@ -2511,9 +2511,9 @@ reason `EndpointNotReady` and requeues.
 `spec.networkPolicy` whose ingress admits only the user-declared sources would
 block this health check and pin `KeystoneAPIReady=False` for a healthy
 deployment. To prevent that, `reconcileNetworkPolicy` appends an always-on
-ingress peer for the operator namespace — resolved at startup from
-`POD_NAMESPACE` or the mounted ServiceAccount namespace file
-(`DetectOperatorNamespace`) — so a correctly deployed operator can always reach
+ingress peer for the operator namespace (resolved at startup from
+`POD_NAMESPACE` or the mounted ServiceAccount namespace file,
+`DetectOperatorNamespace`) so a correctly deployed operator can always reach
 the API on TCP 5000. On the egress side the same NetworkPolicy auto-derives
 rules for DNS, the kube-apiserver (used by the rotation CronJob pods that share
 the policy's pod selector), the database (port from `spec.database.port`), and
@@ -2578,7 +2578,7 @@ resp.Body.Close()`, even on non-2xx responses. Go's `net/http` returns a non-nil
 
 **Error handling:** Only the `http.NewRequestWithContext` error (malformed URL) is
 returned as a reconcile error. All HTTP transport errors and non-2xx responses set a
-condition and requeue — they are never returned as errors.
+condition and requeue: they are never returned as errors.
 
 ---
 
@@ -2683,8 +2683,8 @@ project, roles, and service catalog entries.
 
 **Admin-password rotation re-run:** Before building the Job,
 the reconciler reads the `password` key of the admin Secret named by
-`spec.bootstrap.adminPasswordSecretRef.Name` and stamps its digest —
-`hex(SHA-256(password))` — onto the bootstrap Job's pod template as the
+`spec.bootstrap.adminPasswordSecretRef.Name` and stamps its digest
+(`hex(SHA-256(password))`) onto the bootstrap Job's pod template as the
 `forge.c5c3.io/admin-password-hash` annotation. Because `job.PodSpecHash` hashes
 the **full** `PodTemplateSpec` (metadata included), a rotated password changes
 this annotation and therefore the `forge.c5c3.io/pod-spec-hash` gate. On the next
@@ -2716,7 +2716,7 @@ contract; the backing const is the unexported `adminPasswordHashAnnotation` in
 set before returning the error, so the failure reason is visible in the CR status
 even when the error triggers controller-runtime backoff.
 
-**Idempotency:** The bootstrap Job is idempotent — `keystone-manage bootstrap` can be
+**Idempotency:** The bootstrap Job is idempotent: `keystone-manage bootstrap` can be
 run multiple times without side effects. This idempotency is what makes the
 admin-password-triggered re-run above safe: re-running bootstrap against an
 already-bootstrapped database simply re-applies the (now rotated) admin credentials
@@ -2827,7 +2827,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 
 The third parameter is the shared config ConfigMap name. It is accepted only for
 sub-reconciler call-site symmetry with `reconcileFernetKeys` and
-`reconcileTrustFlush` — the controller wires this sub-reconciler as
+`reconcileTrustFlush`: the controller wires this sub-reconciler as
 `instrumentSubReconciler(ctx, "PasswordRotation", ...)` passing `configMapName`.
 It is intentionally unused (named `_`) because the rotate
 script never runs `keystone-manage` and therefore needs no keystone
@@ -2850,9 +2850,9 @@ Two lifecycle paths:
    `NotFound` so teardown is idempotent and safe on a CR that never enabled
    rotation. Sets `PasswordRotationReady=True` with reason `RotationDisabled`. A
    nil pointer means the feature was never opted into (the defaulting webhook
-   deliberately does not materialize it); `enabled: false` means it was switched
-   off — both branches tear down. The PushSecret uses `DeletionPolicy=None` (see
-   below), so its deletion leaves the last-pushed password intact in OpenBao —
+   does not materialize it); `enabled: false` means it was switched
+   off: both branches tear down. The PushSecret uses `DeletionPolicy=None` (see
+   below), so its deletion leaves the last-pushed password intact in OpenBao:
    disabling rotation never locks the admin out.
 2. **Enabled**: the ordered steps below.
 
@@ -2913,8 +2913,8 @@ Two lifecycle paths:
 | Env `PASSWORD_LENGTH` | `normalizedAdminPasswordLength` (webhook default 32, defense-in-depth floor 24) |
 | Volume `scripts` | ConfigMap `{name}-admin-password-rotate-script-{hash}` (`defaultMode: 0555`), mounted read-only at `/scripts` |
 
-The CronJob mounts **only** the rotation script — no keystone configuration and
-no key repositories — because it never runs `keystone-manage`. `SECRET_NAME`
+The CronJob mounts **only** the rotation script (no keystone configuration and
+no key repositories) because it never runs `keystone-manage`. `SECRET_NAME`
 points only at the staging Secret; the CronJob ServiceAccount can never patch the
 push-source Secret (see the RBAC split below).
 
@@ -2934,7 +2934,7 @@ so each Model-B-enabled Keystone CR writes its admin password to
 its own OpenBao object and multiple Keystone CRs never collide on a shared
 `bootstrap/keystone-admin` key. `DeletionPolicy=None` is chosen because this is a
 per-Keystone-CR **persistent** bootstrap secret: keeping the last-pushed password in
-OpenBao on teardown (or when rotation is disabled — the teardown path deletes this
+OpenBao on teardown (or when rotation is disabled; the teardown path deletes this
 PushSecret) means re-adoption works and the admin is never locked out.
 
 **Condition Contract:**
@@ -2948,12 +2948,12 @@ PushSecret) means re-adoption works and the admin is never locked out.
 **Error handling:** Errors from the teardown, push-source/staging Secret ensure,
 the rotation apply, RBAC ensure, script ConfigMap creation, CronJob ensure, or
 PushSecret ensure are wrapped with context and returned directly. No requeue
-delays — errors trigger controller-runtime exponential backoff.
+delays: errors trigger controller-runtime exponential backoff.
 
 **Idempotency:** The push-source Secret's metadata is reconciled but its `.data`
 is never touched outside `applyAdminPasswordRotation`, so a reconcile never
 clobbers a previously committed password. The script ConfigMap uses
-content-based naming — an unchanged script returns the existing ConfigMap name.
+content-based naming: an unchanged script returns the existing ConfigMap name.
 All teardown deletes tolerate `NotFound`. The apply step is a no-op unless a
 completed rotation is staged, so reconciles in the steady state converge without
 side effects.
@@ -2985,7 +2985,7 @@ the operator via `ensureStagingSecret`:
   `{name}-admin-password-rotation`.
 
 The CronJob ServiceAccount has **no `create`, `update`, or `delete`** on either
-Secret. The operator — not the CronJob — writes the push-source Secret via
+Secret. The operator, not the CronJob, writes the push-source Secret via
 `applyAdminPasswordRotation`'s GET-then-`Update` full replacement, keeping the
 token-forgery primitive (write access to a Secret a privileged workload consumes)
 out of the CronJob's attack surface.
@@ -3051,9 +3051,9 @@ condition:
 - **LDAP** backends render into one immutable, content-hashed
   `<name>-domains` Secret (one `keystone.<domain>.conf` per backend, plus a
   `<domain>-ca.pem` sibling when TLS is configured). The Secret name is
-  threaded to `reconcileConfig` — which then turns
+  threaded to `reconcileConfig` (which then turns
   `[identity] domain_specific_drivers_enabled` on and points
-  `domain_config_dir` at `/etc/keystone/domains` — and to every workload
+  `domain_config_dir` at `/etc/keystone/domains`) and to every workload
   builder (the Deployment and each keystone-manage Job/CronJob mount it
   read-only at that path, mode 0400).
 - **OIDC** backends render into one immutable, content-hashed
@@ -3061,13 +3061,13 @@ condition:
   plus per-backend `.provider`/`.client`/`.conf` documents under
   backend-named data keys (`%` is invalid in Secret keys, so `KeyToPath`
   items restore the real scheme-stripped, URL-escaped issuer filenames at
-  mount time). The `.provider` discovery document is pre-provisioned —
+  mount time). The `.provider` discovery document is pre-provisioned:
   assembled from explicit `endpoints` or fetched from
   `providerMetadataURL` through the operator's HTTP seam with a per-backend
   `(uid, generation)` cache and an issuer-equality check. The
   `OIDCCryptoPassphrase` lives in the stable-named
   `<name>-oidc-crypto-passphrase` Secret (operator-generated, no OpenBao
-  backup — regenerable by design) and is embedded into `proxy.conf`, so a
+  backup: regenerable by design) and is embedded into `proxy.conf`, so a
   regeneration re-hashes the federation Secret and rolls every pod
   together. The resulting `federationProjection` drives the
   `[auth]`/`[openid]`/`[federation]` sections in `reconcileConfig`, the
@@ -3083,20 +3083,20 @@ provider metadata (skipped per-backend with an `IdentityBackendSkipped`
 Warning event while healthy siblings keep projecting), and the defensive
 duplicate-domain skip all return a zero result:
 `RunPipeline` short-circuits on non-zero results, and blocking here would
-deadlock first-install — a backend cannot become `DomainReady` until the
+deadlock first-install: a backend cannot become `DomainReady` until the
 Keystone API is up, which needs the Deployment this pipeline has not created
 yet. Wake-ups are watch-driven (backend status flips re-enqueue the Keystone).
 Only genuine infrastructure failures (List/render/create errors) surface as
 errors.
 
-Deleting backends (`DeletionTimestamp` set) are de-projected immediately —
+Deleting backends (`DeletionTimestamp` set) are de-projected immediately:
 the dedicated controller's finalizer waits for exactly this de-projection
 before it applies the domain deletion policy, so keystone never runs with
 config pointing at a domain mid-teardown. Stale domains and federation
 Secrets are pruned alongside the config ConfigMaps (retain 3; full cleanup
 when the last backend of a type detaches so no bind password, client secret,
 or passphrase copy lingers). The config render cache keys on the projection
-state — domains flag, federation flag, and remote-id attribute — because
+state (domains flag, federation flag, and remote-id attribute) because
 attach/detach changes no Keystone generation. No new Keystone-CR condition
 type exists for federation by design: everything stays under the
 `IdentityBackends` step and its `IdentityBackendsReady` condition, so the
@@ -3109,7 +3109,7 @@ type exists for federation by design: everything stays under the
 **File:** `operators/keystone/internal/controller/keystoneidentitybackend_controller.go`
 
 The dedicated backend controller runs as a second reconciler in the same
-manager (registered after `KeystoneReconciler` in `main.go` — that
+manager (registered after `KeystoneReconciler` in `main.go`: that
 reconciler's `SetupWithManager` is the single registration site for the
 KeystoneIdentityBackend field indexes both controllers use). It is the
 **single writer** of KeystoneIdentityBackend status; the keystone-side
@@ -3142,10 +3142,10 @@ identity-backend leg over the `spec.secretRefs.name` index), and the
 resulting projection flip reaches this controller through the Keystone watch.
 
 **Reconcile flow (normal path):** resolve the Keystone (`KeystoneNotFound`
-when absent — admission tolerates dangling references for GitOps ordering),
+when absent: admission tolerates dangling references for GitOps ordering),
 gate on `KeystoneAPIReady=True` (`WaitingForKeystoneAPI`), read the bootstrap
 admin password, and drive the domain through the minimal identity client
-(`operators/keystone/internal/identity` — stdlib-only domain CRUD,
+(`operators/keystone/internal/identity`: stdlib-only domain CRUD,
 authenticated per call with the bootstrap admin against `internalAPIURL`):
 `Manage` creates the domain and reconciles description/enabled drift on its
 own domain (recorded `status.domainID`), never seizing a same-named foreign
@@ -3153,11 +3153,11 @@ domain (`DomainAlreadyExists`); `Adopt` resolves by name and never mutates.
 
 For **OIDC** backends the flow continues (gated on `DomainReady=True`): the
 controller upserts the three keystone federation API objects with real drift
-detection — the identity provider (`remote_ids` pinned to the issuer,
+detection: the identity provider (`remote_ids` pinned to the issuer,
 domain-scoped, patched only on description/remoteIDs/enabled divergence),
 the mapping (`<identityProviderName>-mapping`, created from the typed
 `spec.mappings` rules through gophercloud, updated only on deep-compare
-divergence), and the protocol (bound to the mapping, re-pointed on drift) —
+divergence), and the protocol (bound to the mapping, re-pointed on drift),
 plus the declarative groups (create-if-missing in the backend's domain) and
 their role assignments (resolved by role/project name; an existence probe
 keeps steady-state passes free of mutating identity-API calls). Mappings ride
@@ -3166,10 +3166,10 @@ providers, protocols, groups, roles, and assignments use the local REST
 client. `FederationObjectsReady` covers the identity provider + protocol,
 `MappingsReady` the mapping/groups/assignments.
 
-`ConfigProjected` is derived from the single authoritative pointer — the
+`ConfigProjected` is derived from the single authoritative pointer: the
 Keystone Deployment's `domains` volume and the conf file inside the Secret it
 references (LDAP), or the `federation-metadata` volume and the backend's
-client document (OIDC) — with a `RequeueSecretPolling` safety net because a
+client document (OIDC), with a `RequeueSecretPolling` safety net because a
 converged Keystone status emits no watch event. `Ready` aggregates the
 backend type's own sub-condition set via the shared helper (LDAP:
 `DomainReady` + `ConfigProjected`; OIDC: plus `FederationObjectsReady` and
@@ -3181,12 +3181,12 @@ down unconditionally in reverse dependency order (protocol → mapping →
 identity provider, tolerating objects already gone, warning with
 `FederationTeardownFailed` on API errors); then `spec.domain.deletionPolicy`
 applies (Manage+Delete disables the domain before deleting it; Retain and
-Adopt leave it untouched — declarative groups follow the domain), then the
+Adopt leave it untouched; declarative groups follow the domain), then the
 finalizer releases. Keystone-gone and admin-credential-gone teardowns fail
 open with a `DomainDeleteFailed` / `FederationTeardownFailed` Warning instead
 of holding the CR hostage.
 
-The controller is deliberately **not** wrapped by `instrumentSubReconciler` —
+The controller is **not** wrapped by `instrumentSubReconciler`:
 those metrics and the `subReconcilerConditionTypes` map are
 keystone-pipeline-scoped (the guard tests require map values to be members of
 `subConditionTypes`); controller-runtime's per-controller metrics cover it.
@@ -3321,7 +3321,7 @@ the existing `Watches(Secret)` filter using `handler.OnlyControllerOwner()`.
 package-level constant `dbConnectionPlaceholder = "mysql+pymysql://placeholder"`.
 The placeholder is intentionally a syntactically valid pymysql URL so that
 oslo.config can parse the file on startup before the environment override is
-applied — parsing errors in the file layer would prevent the process from
+applied: parsing errors in the file layer would prevent the process from
 reaching the override layer. All other keys in the `[database]` section
 (`max_retries`, `connection_recycle_time`) are unchanged.
 
@@ -3498,8 +3498,8 @@ single helper, `instrumentSubReconciler`, defined in
 sub-reconciler call with this helper; direct calls that bypass it are a
 contract violation.
 
-For the authoritative catalogue of registered metrics — names, labels,
-and histogram buckets — see
+For the authoritative catalogue of registered metrics (names, labels,
+and histogram buckets), see
 [Keystone Operator Prometheus Metrics](../keystone-operator-metrics.md).
 
 ### The `instrumentSubReconciler` helper
@@ -3516,13 +3516,13 @@ Behavioural contract:
 
 - **Always** records one observation in
   `keystone_operator_reconcile_duration_seconds{sub_reconciler=name}`
-  via `defer` — the observation is emitted on the success path, the
+  via `defer`: the observation is emitted on the success path, the
   error path, and even when `fn` panics (the deferred call runs before
   the stack unwinds).
 - **Only** increments
   `keystone_operator_reconcile_errors_total{sub_reconciler=name, condition_type=…}`
   when `fn` returns a non-nil error.
-- Does **not** recover from panics — the caller sees the same
+- Does **not** recover from panics: the caller sees the same
   `panic`/error that `fn` produced.
 - Carries no per-CR labels. The `sub_reconciler` label is bounded by
   the number of sub-reconciler names, keeping series count
@@ -3552,7 +3552,7 @@ responsible for driving:
 | `TrustFlush` | `TrustFlushReady` |
 
 The collapsed `SecretsReady` mapping for `Secrets`, `DBConnectionSecret`,
-and `Config` is intentional — those three sub-reconcilers form the
+and `Config` is intentional: those three sub-reconcilers form the
 earliest readiness gate and share a single condition type. The
 cardinality drift-guard
 `TestSubReconcilerConditionTypesCoversAllNames` asserts that every

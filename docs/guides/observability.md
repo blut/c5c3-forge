@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Observability & Diagnostics
 
-How to read what the Keystone operator is doing — without tailing controller logs.
+How to read what the Keystone operator is doing, without tailing controller logs.
 
 ## Prerequisites
 
@@ -101,7 +101,7 @@ The first `status=False` condition from the top is usually the bottleneck:
 
 - `SecretsReady=False` → check that `keystone-db` and `keystone-admin` Secrets exist in the same namespace
 - `DatabaseReady=False` → look at Events for `DBSyncFailed` or `SchemaDriftDetected`
-- `DeploymentReady=False` → `kubectl describe deploy keystone` — usually image pull or probe failures
+- `DeploymentReady=False` → `kubectl describe deploy keystone`: usually image pull or probe failures
 :::
 
 ---
@@ -127,7 +127,7 @@ kubectl get keystone keystone -n openstack -w \
 
 ## Events
 
-Every lifecycle transition emits a Kubernetes Event with a stable, PascalCase `reason`. Events are deduplicated by (object, reason, message) — repeated reconciles do not spam the event stream.
+Every lifecycle transition emits a Kubernetes Event with a stable, PascalCase `reason`. Events are deduplicated by (object, reason, message): repeated reconciles do not spam the event stream.
 
 ### Show everything for a CR
 
@@ -211,7 +211,7 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
   --tail=200 -f
 ```
 
-The operator uses structured `logr` output — every line includes the reconciled object's namespace/name and the sub-reconciler that produced the log. Filter a specific CR:
+The operator uses structured `logr` output: every line includes the reconciled object's namespace/name and the sub-reconciler that produced the log. Filter a specific CR:
 
 ```bash
 kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=500 \
@@ -232,8 +232,8 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --ta
 
 ## Tested by
 
-Lifecycle event emission and `spec.logging` → oslo.log propagation — the two
-observable surfaces this guide reads — are asserted on the CI e2e kind cluster
+Lifecycle event emission and `spec.logging` → oslo.log propagation (the two
+observable surfaces this guide reads) are asserted on the CI e2e kind cluster
 by these chainsaw suites:
 
 ```bash

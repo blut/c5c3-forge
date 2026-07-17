@@ -31,11 +31,11 @@ KIND_HOST_PORT=8443 make deploy-infra
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
 is running and a `keystone` CR is `Ready` in `openstack`. (The devstack's default
-`kindnet` CNI does not enforce NetworkPolicy — item 1 below explains what you can
+`kindnet` CNI does not enforce NetworkPolicy; item 1 below explains what you can
 and cannot verify on kind.)
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
+1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy: for real
    enforcement.** Confirm with your platform team. Common CNIs that enforce:
 
    - [Calico](https://docs.tigera.io/calico/latest/network-policy/policy-rules/kubernetes)
@@ -49,9 +49,9 @@ and cannot verify on kind.)
    policy object is still rendered and the operator keeps reconciling
    normally, so this guide's verification steps (§4.1–4.3) confirm only that
    the policy has the right **shape** and that enabling it does **not break**
-   the operator — they do **not** prove that packets outside the allow-list
+   the operator. They do **not** prove that packets outside the allow-list
    are dropped. Real enforcement requires a cluster whose CNI enforces
-   NetworkPolicy (Calico, Cilium, Antrea) — typically your production
+   NetworkPolicy (Calico, Cilium, Antrea): typically your production
    platform, not the kind devstack.
    :::
 
@@ -100,7 +100,7 @@ Example output on a kubeadm cluster with an HA control plane:
 > accepts CIDR notation only. Use `/32` for single IPs. DNS names are not
 > valid here.
 
-Record every endpoint IP — the rule must cover all of them, or the operator
+Record every endpoint IP: the rule must cover all of them, or the operator
 will lose quorum on leader-election renewals whenever it happens to be
 talking to an excluded replica.
 
@@ -153,8 +153,8 @@ Optional overrides:
 - **Webhook clients.** By default, webhook ingress (9443) falls back to
   `kubeApiServer.cidrs`, which is correct for the vast majority of
   clusters (the API server is the only caller of admission webhooks).
-  Override only if you operate a non-standard webhook architecture — for
-  example, an API server front-end that calls webhooks from a different
+  Override only if you operate a non-standard webhook architecture, for
+  example an API server front-end that calls webhooks from a different
   CIDR than it advertises in `endpoints/kubernetes`:
 
   ```yaml
@@ -169,7 +169,7 @@ Optional overrides:
 
 On the tutorial devstacks the `keystone-operator` release is owned by Flux (a
 `HelmRelease`), so apply the values change by patching that HelmRelease's
-`spec.values` — not with a raw `helm upgrade`, which the Flux helm-controller
+`spec.values`, not with a raw `helm upgrade`, which the Flux helm-controller
 reverts on its next reconcile. Substitute the CIDRs and ports you gathered in
 step 1:
 
@@ -182,7 +182,7 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 ```
 
 The optional overrides from section 2 (`dns`, `allowMetricsFrom`,
-`webhookClients`) go into the same `spec.values.networkPolicy` patch — merge
+`webhookClients`) go into the same `spec.values.networkPolicy` patch; merge
 them into the JSON above.
 
 Flux reconciles the HelmRelease, which creates the `NetworkPolicy` object and
@@ -228,7 +228,7 @@ kubectl -n keystone-system get pods \
   -l app.kubernetes.io/name=keystone-operator,app.kubernetes.io/instance=keystone-operator
 ```
 
-A zero-pod match is a symptom of mismatched labels — usually a stale
+A zero-pod match is a symptom of mismatched labels, usually a stale
 `fullnameOverride` or a custom `nameOverride`. The NetworkPolicy will exist
 but protect no pod.
 
@@ -267,7 +267,7 @@ or leader-election lease renewals fail with `context deadline exceeded`,
 and the operator pod restarts.
 
 **Diagnosis:** the `kubeApiServer.cidrs` list is missing one or more of the
-current API server endpoint IPs. Re-run step 1 — an HA control plane may
+current API server endpoint IPs. Re-run step 1; an HA control plane may
 have added a new replica, or a control-plane node may have been replaced
 with a different IP.
 
@@ -284,7 +284,7 @@ timed out.
 
 **Diagnosis:** webhook ingress is blocked. Usually the API server calls
 webhooks from an IP that is **not** present in
-`endpoints/kubernetes` — for example, because it sits behind a front-end
+`endpoints/kubernetes`, for example because it sits behind a front-end
 proxy. `networkPolicy.webhookClients.cidrs` falls back to
 `kubeApiServer.cidrs` when empty, which is wrong in that topology.
 
@@ -321,7 +321,7 @@ networkPolicy.kubeApiServer.cidrs must not be empty ...
 ```
 
 **Diagnosis:** you set `networkPolicy.enabled=true` but left `cidrs` or
-`ports` empty. This is the fail-closed guard — the
+`ports` empty. This is the fail-closed guard: the
 template refuses to render a policy that would break the operator.
 
 **Fix:** populate both lists from step 1 and re-run the upgrade.
@@ -379,6 +379,6 @@ chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 
 Like the verification steps above, this suite runs on the default `kindnet` CI
 cluster, so it validates that the chart **renders** the policy and that the
-operator **reconciles to Ready** while the (unenforced) policy is present — it
+operator **reconciles to Ready** while the (unenforced) policy is present. It
 does **not** assert that blocked egress is actually dropped. Enforcement
 coverage would require a CI job with a NetworkPolicy-enforcing CNI.

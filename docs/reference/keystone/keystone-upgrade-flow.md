@@ -157,7 +157,7 @@ spec.image.tag changed (e.g., 2025.2 -> 2026.1)
 #### Expanding
 
 - **Job name:** `{name}-db-expand`
-- **Image:** NEW release (`spec.image.tag`) — expand migrations are owned by
+- **Image:** NEW release (`spec.image.tag`): expand migrations are owned by
   the target release's alembic tree; running them with the old binary would
   leave the contract step ahead of expand (`_validate_upgrade_order` fails).
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --expand`
@@ -167,7 +167,7 @@ spec.image.tag changed (e.g., 2025.2 -> 2026.1)
 #### Migrating
 
 - **Job name:** `{name}-db-migrate`
-- **Image:** NEW release (`spec.image.tag`) — same rationale as Expanding.
+- **Image:** NEW release (`spec.image.tag`): same rationale as Expanding.
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --migrate`
 - **On completion:** Phase transitions to `RollingUpdate`, requeues immediately.
 - **On failure:** `DatabaseReady=False` with reason `MigrateFailed`.
@@ -313,7 +313,7 @@ because all state is persisted in the Keystone CR status:
 
 - `status.upgradePhase` persists across reconcile cycles and operator pod restarts.
 - On restart, the reconciler reads the current phase and resumes from that point.
-- Completed Jobs are detected via their existing status — the operator does not
+- Completed Jobs are detected via their existing status: the operator does not
   re-run a phase whose Job has already completed.
 - `RunJob` idempotency prevents duplicate Jobs from being created if the operator
   restarts while a Job is still running.
@@ -333,7 +333,7 @@ because all state is persisted in the Keystone CR status:
 
 A sequential upgrade can be aborted before it completes by reverting
 `spec.image.tag` to the value in `status.installedRelease`. This is the
-supported escape hatch when an upgrade is wedged — for example, an expand or
+supported escape hatch when an upgrade is wedged: for example, an expand or
 migrate Job that fails permanently (exceeds its backoff limit) or whose Pod
 cannot pull the target image.
 
@@ -381,7 +381,7 @@ never set the field. For the CRD-level shape and `suspend: true` opt-out, see
 ### Materialization on the Next Admission Round-trip
 
 The webhook does not mutate stored objects in etcd at the moment the operator
-upgrade completes — Kubernetes admission webhooks only run on `CREATE` and
+upgrade completes: Kubernetes admission webhooks only run on `CREATE` and
 `UPDATE` requests. As a result, an existing brownfield CR that lacks
 `spec.trustFlush` retains that shape in etcd until something writes the
 object. The trust-flush CronJob is created on the next admission round-trip,
@@ -442,7 +442,7 @@ To smooth the transition, either:
 2. **Stagger the rollout.** Roll the operator upgrade out one Keystone CR at a
    time on multi-CR clusters, and pause between CRs to confirm the first
    `{name}-trust-flush` Job pod completes within the SLO before continuing.
-   Each CR's first run happens independently — staggering caps the
+   Each CR's first run happens independently: staggering caps the
    concurrent database load.
 
 After the first successful run, subsequent hourly runs only delete rows whose
@@ -451,8 +451,8 @@ steady-state levels.
 
 ### Opting Out per CR
 
-To keep an individual CR off the hourly cadence after upgrade — for example,
-because that environment never issues trusts — set
+To keep an individual CR off the hourly cadence after upgrade (for example,
+because that environment never issues trusts), set
 `spec.trustFlush.suspend: true` rather than removing the field. The CronJob
 resource is preserved with `spec.suspend: true` and can be unsuspended later
 without a delete/recreate. Removing the field is not effective on a
@@ -698,7 +698,7 @@ The renamed sub-resources are new objects with new `metadata.uid` values and
 fresh `ownerReferences` to the Keystone CR. The legacy `<cr-name>-api` <!-- keystone-api-legacy: pre-rename name documented by the upgrade runbook. -->
 sub-resources from earlier operator releases carry their own owner references
 to the same Keystone CR, but the current reconciler does **not** issue
-`Delete` calls for them — it simply stops reconciling those names. As a
+`Delete` calls for them: it simply stops reconciling those names. As a
 result, on an upgraded cluster the legacy objects persist alongside the new
 bare-name objects until an operator removes them.
 
@@ -709,8 +709,8 @@ sub-resources. Because the legacy objects retain valid
 collector will not delete them on its own. Operators upgrading across the
 rename boundary must remove them by hand. Skipping this step leaves stale
 Deployments/Services/PDBs/HPAs/HTTPRoutes/NetworkPolicies in the namespace,
-which can confuse `kubectl get`, score against `ResourceQuota`, and — in
-the case of the legacy Service — keep an unused ClusterIP routable.
+which can confuse `kubectl get`, score against `ResourceQuota`, and (in
+the case of the legacy Service) keep an unused ClusterIP routable.
 :::
 
 Run the following commands once per upgraded namespace, substituting
@@ -748,7 +748,7 @@ kubectl -n <namespace> get deployment,service,pdb,hpa,networkpolicy,httproute.ga
 
 A clean upgrade shows exactly one row per kind, all named `<cr-name>`
 (without the `-api` suffix). Any row still ending in `-api` indicates a
-missed delete — re-run the corresponding `kubectl delete` above.
+missed delete: re-run the corresponding `kubectl delete` above.
 
 ::: warning Until a cleanup sub-reconciler exists
 A future change may add an automated cleanup step to the operator. Until then,

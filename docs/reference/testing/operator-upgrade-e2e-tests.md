@@ -67,7 +67,7 @@ cluster. `hack/ci-deploy-operator.sh` installs the pulled chart via its optional
 `status.installedRelease` tracks the Keystone service image tag (`2025.2`), not
 the operator version, so "unchanged" means it stays `2025.2` across the operator
 upgrade. Bootstrap is gated on the admin-password digest (not the image), so the
-operator upgrade must not re-run it — asserted via the unchanged bootstrap Job
+operator upgrade must not re-run it: asserted via the unchanged bootstrap Job
 UID and the exactly-one-bootstrap-Job count.
 
 ## Running locally

@@ -13,10 +13,10 @@ This repository ships a suite of repository-specific
 [Claude Code](https://docs.claude.com/en/docs/claude-code) skills under
 [`.claude/skills/`](https://github.com/c5c3/forge/tree/main/.claude/skills).
 Most skills are focused **audits** that compare one surface of the
-codebase against its source of truth — the operator CRDs, the
+codebase against its source of truth: the operator CRDs, the
 sub-reconciler chains, the validation rules, the release wiring, the
 FluxCD infrastructure stack, the Renovate configuration, the e2e
-fixture corpus, the SPDX/REUSE coverage, the Go workspace — and report
+fixture corpus, the SPDX/REUSE coverage, the Go workspace. They report
 drift before it reaches a release. The suite also carries three
 **planners** (`prepare-new-service`, `prepare-new-release`,
 `prepare-new-guide`) that turn an onboarding or authoring task into a
@@ -51,7 +51,7 @@ The skills are loaded automatically by Claude Code when it sees the
 repository's `.claude/` directory. There are two ways to run one:
 
 - **Explicit slash command.** Type `/<skill-name>` in the Claude Code
-  prompt — for example `/check-doc-drift` — and Claude follows the
+  prompt (for example `/check-doc-drift`) and Claude follows the
   procedure in the skill's `SKILL.md`.
 - **Implicit trigger.** Each skill's description names the situations
   where it should be used proactively ("after editing a `*_types.go`
@@ -64,7 +64,7 @@ the deterministic part of the audit and exits non-zero on a `[FAIL]`;
 the planners ship `inventory-*` scripts (the guide planner a
 `scaffold-guide.sh` / `validate-guide.sh` pair) and the e2e runbook
 ships a log collector (`collect-e2e-failure.sh`). Audit, inventory,
-scaffold, and validation scripts are safe to run by hand from a shell —
+scaffold, and validation scripts are safe to run by hand from a shell:
 they read files and print to stdout; they never write to the tree (the
 scaffold prints a skeleton the caller redirects into a file). The
 collector downloads CI evidence into the untracked `_output/` directory.
@@ -143,7 +143,7 @@ Audit skills name the script `audit-<name>.sh`; the planners ship
 `collect-e2e-failure.sh`.
 
 `SKILL.md` opens with a YAML frontmatter block carrying `name` and
-`description` — the description is what Claude Code matches the user's
+`description`: the description is what Claude Code matches the user's
 prompt against when deciding whether to load the skill. The body
 documents the audit's procedure (a numbered step list with the script
 invocation, the hand-cross-reference work, the authoritative gate to
@@ -164,7 +164,7 @@ When you add a new skill or modify an existing one, keep the suite
 internally consistent:
 
 - **Frontmatter.** Every `SKILL.md` carries `name` and `description`.
-  The description is the discoverability surface — write it as a
+  The description is the discoverability surface: write it as a
   single sentence in the form "Audit … — … . Use when …".
 - **Read-only.** The companion script reads files and prints reports;
   it never writes to the tree, never runs `make generate`, never
@@ -182,13 +182,13 @@ internally consistent:
   on macOS before committing.
 - **SPDX headers.** The Bash script carries an SPDX-FileCopyrightText /
   SPDX-License-Identifier pair. `SKILL.md` files follow the suite
-  convention and start directly with the YAML frontmatter — no header
+  convention and start directly with the YAML frontmatter: no header
   comment. The [`check-spdx-reuse`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-spdx-reuse/SKILL.md)
   skill audits the script coverage.
 - **Stay in English.** Skill bodies, frontmatter, and script comments
   follow the repository-wide English-only rule.
 
-The skills are not a substitute for CI gates — they are an aid for the
+The skills are not a substitute for CI gates: they are an aid for the
 contributor (or the agent) who has to read a surface deeply and explain
 what changed. When in doubt, run the gate listed in the skill's
 `SKILL.md` and trust its verdict.

@@ -6,7 +6,7 @@ quadrant: operator
 # Keystone CRD API Reference
 
 Reference documentation for the Keystone Custom Resource Definition. The
-Keystone CRD is the reference implementation for all CobaltCore service operators —
+Keystone CRD is the reference implementation for all CobaltCore service operators:
 the patterns established here (types, webhooks, generation, scheme registration) will
 be replicated for Nova, Neutron, Glance, and other OpenStack service operators.
 
@@ -53,7 +53,7 @@ the operator creates:
 This convention replaces the historical form that appended an `-api` suffix to each
 sub-resource (so the same CR would have produced `-api`-suffixed sub-resources).
 The change aligns the internal Service DNS with the public Gateway hostname posture
-and removes the redundant suffix that no longer reflected a meaningful split — the
+and removes the redundant suffix that no longer reflected a meaningful split: the
 Keystone CR has only ever owned the API role.
 
 For migration semantics (catalog refresh, ownerReference cascade GC of legacy
@@ -241,7 +241,7 @@ validating webhook is unavailable.
 ## AutoscalingSpec
 
 Configures horizontal pod autoscaling for the Keystone API Deployment.
-This is a pointer field (`*AutoscalingSpec`) on `KeystoneSpec` — when `nil`,
+This is a pointer field (`*AutoscalingSpec`) on `KeystoneSpec`: when `nil`,
 no HPA is created and the `HPAReady` condition is set to `True` with reason
 `HPANotRequired`. When set, a `HorizontalPodAutoscaler` (autoscaling/v2) is
 created targeting the `{name}` Deployment. Removing the field deletes the
@@ -305,7 +305,7 @@ spec:
 
 ## UWSGISpec
 
-Configures the uWSGI application server parameters for the Keystone API container. This is a pointer field (`*UWSGISpec`) on `KeystoneSpec` — when `nil`,
+Configures the uWSGI application server parameters for the Keystone API container. This is a pointer field (`*UWSGISpec`) on `KeystoneSpec`: when `nil`,
 the reconciler uses hardcoded defaults (processes=2, threads=1, httpKeepAlive=true)
 and the webhook does **not** inject a default `UWSGISpec`. When set (even as
 `uwsgi: {}`), the webhook defaults zero-valued sub-fields and the reconciler reads
@@ -382,7 +382,7 @@ spec:
 ## Graceful-termination fields
 
 Five CR fields control the shutdown envelope applied during Keystone rolling
-updates — `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds`,
+updates: `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds`,
 `spec.deployment.strategy`, `spec.uwsgi.harakiri`, and `spec.uwsgi.httpKeepAliveTimeout`.
 Each field is listed in its owning section (top-level `KeystoneSpec` or
 `UWSGISpec`); this section consolidates their semantics, interaction rules,
@@ -481,7 +481,7 @@ Configures oslo.log output for the Keystone API container. This is a
 pointer field (`*LoggingSpec`) on `KeystoneSpec`. When `nil`, the defaulting
 webhook materializes a baseline `LoggingSpec{Format: "text", Level: "INFO",
 Debug: false}` (no per-logger overrides) so downstream reconciler code never
-sees a nil pointer — matching the documented production baseline (stdout/stderr,
+sees a nil pointer, matching the documented production baseline (stdout/stderr,
 oslo.log line format, no debug noise). When set (even as `logging: {}`), the
 webhook partially fills zero-valued sub-fields with the same baseline values
 and the validating webhook enforces the enum constraints described below.
@@ -576,17 +576,17 @@ patched to `null`), so the operator always creates a CronJob named
 `{name}-trust-flush` running `keystone-manage trust_flush` and the
 `TrustFlushReady` condition is set to `True` with reason `TrustFlushReady`.
 
-There is no nil-back path on a webhook-enabled cluster — a
+There is no nil-back path on a webhook-enabled cluster: a
 `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and
 is re-materialized, preserving the existing CronJob (no delete/recreate). To
-pause the schedule without deleting the CronJob, set `suspend: true` — the
+pause the schedule without deleting the CronJob, set `suspend: true`: the
 resource and `TrustFlushReady=True` condition are preserved while suspended.
 
 The pointer shape is retained for envtest fixtures and other webhook-less
 clusters where the defaulting webhook is not wired up. In that legacy bypass
 posture the reconciler logs a warning, deletes any existing CronJob, and sets
 `TrustFlushReady=True` with reason `TrustFlushNotRequired` and a message
-identifying the bypass — see [`reconcileTrustFlush`](./keystone-reconciler.md#reconciletrustflush).
+identifying the bypass; see [`reconcileTrustFlush`](./keystone-reconciler.md#reconciletrustflush).
 
 For brownfield CRs that omit `spec.trustFlush` at the time of an operator
 upgrade and the recommended pre-upgrade actions on clusters with very large
@@ -603,8 +603,8 @@ in the upgrade-flow reference.
 ### CronJob Resource Mapping
 
 The CronJob created from this spec has the following shape. Field values
-sourced from `trustFlush.*` are populated either by the user or — when the
-field was omitted on submission — by the defaulting webhook, which
+sourced from `trustFlush.*` are populated either by the user or (when the
+field was omitted on submission) by the defaulting webhook, which
 materializes `{schedule: "0 * * * *", suspend: false}` before the reconciler
 ever sees the object.
 
@@ -657,12 +657,12 @@ spec:
 ## NetworkPolicySpec
 
 Configures network isolation for the Keystone API pods. This is a
-pointer field (`*NetworkPolicySpec`) on `KeystoneSpec` — when `nil`, no
+pointer field (`*NetworkPolicySpec`) on `KeystoneSpec`: when `nil`, no
 NetworkPolicy is managed and the `NetworkPolicyReady` condition is set to
 `True` with reason `NetworkPolicyNotRequired`. When set, the operator creates
-a NetworkPolicy that restricts ingress on TCP 5000 to the declared sources —
-plus the operator's own namespace (so the operator health check can reach the
-API) and, when `spec.gateway` is set, the gateway namespace — and auto-derives
+a NetworkPolicy that restricts ingress on TCP 5000 to the declared sources
+(plus the operator's own namespace, so the operator health check can reach the
+API, and, when `spec.gateway` is set, the gateway namespace) and auto-derives
 egress rules for DNS, the kube-apiserver, the database, and the cache. Removing
 the field deletes the NetworkPolicy on the next reconcile.
 
@@ -691,7 +691,7 @@ on the TCP 5000 rule:
 ### Auto-derived Egress
 
 The operator appends the following egress rules before `additionalEgress`.
-All rules are port-only — the destination is unrestricted (tightening to
+All rules are port-only: the destination is unrestricted (tightening to
 backend pod labels is deferred). Rule order is deterministic: DNS, apiserver,
 database, cache.
 
@@ -704,7 +704,7 @@ database, cache.
 
 A defensive guard in the reconciler refuses to create a NetworkPolicy with an
 empty `ingress` list, even if CEL validation was bypassed (stored objects,
-disabled webhooks, direct etcd writes) — the operator fails closed rather than
+disabled webhooks, direct etcd writes): the operator fails closed rather than
 open.
 
 ### Example
@@ -750,7 +750,7 @@ unchanged. The field table below is the canonical reference that the
 [c5c3 ControlPlane CRD doc](../c5c3/controlplane-crd.md#gatewayspec) links back
 to. The reconciler behavior described in this section is Keystone-specific.
 
-Configures external exposure of the Keystone API via a Gateway API HTTPRoute. This is a pointer field (`*GatewaySpec`) on `KeystoneSpec` — when `nil`,
+Configures external exposure of the Keystone API via a Gateway API HTTPRoute. This is a pointer field (`*GatewaySpec`) on `KeystoneSpec`: when `nil`,
 no HTTPRoute is created and the `HTTPRouteReady` condition is set to `True` with
 reason `HTTPRouteNotRequired`. When set, an `HTTPRoute` (from
 `gateway.networking.k8s.io/v1`) is created in the Keystone CR's namespace, attached
@@ -759,7 +759,7 @@ port 5000. Removing the field deletes the existing HTTPRoute.
 
 The operator plays the **application-developer** role in the Gateway API model: it
 manages only the `HTTPRoute`. The referenced `Gateway` (and its `GatewayClass`) are
-**platform-team** concerns and must be pre-provisioned — this operator does not
+**platform-team** concerns and must be pre-provisioned: this operator does not
 create or reconcile them. Cross-namespace `parentRef` references additionally
 require a `ReferenceGrant` in the target namespace, which is out of scope for this
 operator.
@@ -857,12 +857,12 @@ the Gateway's data-plane pods can reach Keystone on TCP 5000:
 > **kind Quick Start note:** a ready-made
 > `Gateway/openstack-gw` ships in the kind overlay
 > (`deploy/kind/base/openstack-gateway.yaml`) and is reachable on the host
-> at `https://keystone.127-0-0-1.nip.io/v3` — see the
+> at `https://keystone.127-0-0-1.nip.io/v3`; see the
 > [Quick Start (Extended) / Access Keystone section](../../quick-start-extended.md#access-keystone-from-your-local-machine).
 > On a Quick Start cluster, setting `spec.gateway.parentRef.name:
 > openstack-gw` plus `hostname: keystone.127-0-0-1.nip.io` makes
 > `status.endpoint = https://keystone.127-0-0-1.nip.io/v3` actually
-> resolve from your workstation — no `/etc/hosts` edit, no
+> resolve from your workstation: no `/etc/hosts` edit, no
 > `kubectl port-forward`. Production overlays do **not** ship
 > `openstack-gw`; operators pick their own Gateway implementation and
 > parent reference there.
@@ -983,8 +983,8 @@ to stay co-scheduled with the API pods.
 
 Carries the Keystone-side federation knobs. Federation itself is activated by
 attaching a federation-typed
-[`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC`) — **not**
-by this block: when at least one OIDC backend is projected, the operator
+[`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC`), **not**
+by this block. When at least one OIDC backend is projected, the operator
 injects the `mod_auth_openidc` reverse-proxy sidecar, binds uWSGI to
 localhost (with the federation-sized `--buffer-size`), and switches the
 Service targetPort to the proxy. This spec only configures how that sidecar
@@ -1016,7 +1016,7 @@ Configures the initial Keystone bootstrap.
 ### PasswordRotationSpec
 
 Configures scheduled admin-password rotation. Unlike `TrustFlushSpec`, the
-defaulting webhook does **not** materialize this block when it is absent —
+defaulting webhook does **not** materialize this block when it is absent:
 scheduled rotation is strictly opt-in, so upgrading a CR that never set
 `passwordRotation` never silently enables it. The webhook only fills the leaf
 defaults once `enabled` is true; the `+kubebuilder:default` markers below
@@ -1144,7 +1144,7 @@ mounted at `/etc/keystone/db-tls/`:
 | `verify-ca` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | `true` | — |
 | `verify-full` | `/etc/keystone/db-tls/ca.crt` | `/etc/keystone/db-tls/tls.crt` | `/etc/keystone/db-tls/tls.key` | `true` | `true` |
 
-Parameters are emitted via `url.Values.Encode()`, which sorts keys lexically — so
+Parameters are emitted via `url.Values.Encode()`, which sorts keys lexically, so
 the resulting query string is deterministic across reconciles regardless of the
 insertion order shown in this table. Any other `mode` value is rejected by
 `modeToSSLParams` (and earlier by the CRD enum and validating webhook) before the
@@ -1196,7 +1196,7 @@ Selects the External Secrets store a consumer routes its ExternalSecrets (and
 backup PushSecrets) through. When the ref is `nil`, the operator defaults to the
 shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so
 existing deployments are unchanged. A namespaced `SecretStore` is always resolved
-in the consuming CR's own namespace — there is no namespace field.
+in the consuming CR's own namespace: there is no namespace field.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1212,7 +1212,7 @@ in the consuming CR's own namespace — there is no namespace field.
 
 When `policyOverrides` is set on `KeystoneSpec`, at least one of `rules` or
 `configMapRef` must be provided. Every `rules` entry must have a non-empty name
-and a non-empty value — an empty value previously passed admission and reached
+and a non-empty value: an empty value previously passed admission and reached
 oslo.policy. All three constraints are enforced by both CEL validation on the
 shared `PolicySpec` type and the validating webhook.
 
@@ -1284,22 +1284,22 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 
 - `spec.fernet.rotationSchedule`, `spec.credentialKeys.rotationSchedule`,
   `spec.trustFlush.schedule`, `spec.autoscaling.minReplicas`, `spec.deployment.topologySpreadConstraints`,
-  `spec.deployment.priorityClassName` — these rely on CRD schema defaults or reconciler-level
+  `spec.deployment.priorityClassName`: these rely on CRD schema defaults or reconciler-level
   fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
   (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
   materialise a struct.
-- `spec.database.tls` itself — the webhook never materializes the `tls` block.
+- `spec.database.tls` itself: the webhook never materializes the `tls` block.
   TLS is strictly opt-in, so an upgrade of a previously plaintext CR cannot
   silently turn encryption on (which would also trigger Certificate
   provisioning). The webhook only partial-fills `tls.mode` (empty → `require`)
   when the parent block is explicitly present, mirroring the `TrustFlush` /
   `UWSGI` / `Logging` non-mutating discipline.
 
-**Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
+**Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook: it
 relies solely on the Kubebuilder `+kubebuilder:default="0 0 * * 0"` marker.
 The webhook uses conditional checks (`== 0` / `== ""`) rather
 than always-set to cooperate with the remaining Kubebuilder `+default` markers, which
-also provide schema-level defaults. Both layers are intentional — schema defaults apply
+also provide schema-level defaults. Both layers are intentional: schema defaults apply
 at deserialization time, while webhook defaults catch zero values that bypass schema
 defaults (e.g., explicit `replicas: 0`).
 
@@ -1313,7 +1313,7 @@ func (w *KeystoneWebhook) ValidateDelete(_ context.Context, _ *Keystone) (admiss
 
 - `ValidateCreate` and `ValidateUpdate` both delegate to the internal `validate()`
   method. There are no create-specific or update-specific rules.
-- `ValidateDelete` always returns `nil` — deletion is unconditionally allowed.
+- `ValidateDelete` always returns `nil`: deletion is unconditionally allowed.
 
 ### Validation Rules
 
@@ -1404,7 +1404,7 @@ func SetupKeystoneEnvTest(
 
 **Design decisions:**
 
-- Uses a **local scheme** — `SharedScheme()` from `internal/common` is not modified.
+- Uses a **local scheme**: `SharedScheme()` from `internal/common` is not modified.
   Only Keystone tests need Keystone types registered.
 - Resolves CRD and webhook manifest paths via `runtime.Caller(0)` relative navigation,
   matching the pattern in `internal/common/testutil/envtest/setup.go`.
@@ -1531,8 +1531,8 @@ ephemeral namespace tears down cleanly.
 
 Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
 and contains the expected field-level error message. Kubernetes admission evaluates
-validation in a fixed pipeline — **mutating webhook (defaulting) → CRD structural
-schema (incl. CEL `XValidation` rules) → validating webhook** — and the first layer
+validation in a fixed pipeline: **mutating webhook (defaulting) → CRD structural
+schema (incl. CEL `XValidation` rules) → validating webhook**, and the first layer
 that rejects an object is the one whose message Chainsaw sees. The mutating step is
 listed first because it can silently rewrite a value out from under a downstream
 rule: `keystone_webhook.go:80-82` coerces `spec.deployment.replicas == 0` to `3` BEFORE the
@@ -1550,7 +1550,7 @@ so the assertions match the full webhook-equivalent message. The
 `06-policy-overrides-empty-rule-key.yaml` and
 `07-networkpolicy-empty-ingress.yaml` fixtures are the dual-layer exceptions where the
 fieldPath emitted by CEL is the parent path (`spec.policyOverrides` /
-`spec.networkPolicy`) — the path where the `XValidation` rule is declared — and
+`spec.networkPolicy`, the path where the `XValidation` rule is declared) and
 NOT the deeper path the validating webhook would emit (`…rules` / `…ingress`).
 Because CEL fails first and short-circuits the admission pipeline, the validating
 webhook's deeper-path message never reaches Chainsaw, so the assertions match only
@@ -1572,7 +1572,7 @@ only by the field under test; the update-rejection fixtures
 (`13-immutable-base.yaml` through `17-immutable-region.yaml`) share the
 `immutable-fields` name so `13-immutable-base.yaml` is the base and `14`-`17` are
 applied as UPDATEs. The create-rejection, update-rejection, and validation-marker
-sets deliberately reuse the `13`-`17` numeric prefixes with distinct filenames, so
+sets reuse the `13`-`17` numeric prefixes with distinct filenames, so
 those prefixes recur across the suite.
 To prevent that scaffold from drifting across files, the fixtures are generated
 from a single canonical source in `tests/e2e/keystone/invalid-cr/_generate.py`.
@@ -1583,17 +1583,17 @@ After editing the scaffold or any per-fixture override, regenerate via
 in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 25` plus
 a cross-reference assertion that every `Fixture.filename` appears as a
 `file:` step in `chainsaw-test.yaml`), so a hand-edit to any generated fixture
-— or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml` —
+(or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml`)
 fails the build before the cluster-bound `e2e-operator` job runs. The
 `00-invalid-cron.yaml` and `01-duplicate-plugins.yaml` fixtures predate the
 generator and are intentionally NOT regenerated.
 
 The following follow-up gaps are intentionally **not** covered by this
-suite — they require new validation rules that do not exist yet, and each one
+suite: they require new validation rules that do not exist yet, and each one
 is tracked as its own feature ticket:
 
 - `topologySpreadConstraints[*].maxSkew: 0` (no CRD-level minimum on the upstream type, no defense-in-depth in the Keystone webhook).
-- Mutation of `spec.cache` mode (`clusterRef` ↔ `servers`) on UPDATE — no transition rule yet. The `spec.database` name and mode and the `spec.bootstrap.adminUser`/`region` fields are now immutable via CEL transition rules (see [CEL Validation Rules](#cel-validation-rules)).
+- Mutation of `spec.cache` mode (`clusterRef` ↔ `servers`) on UPDATE: no transition rule yet. The `spec.database` name and mode and the `spec.bootstrap.adminUser`/`region` fields are now immutable via CEL transition rules (see [CEL Validation Rules](#cel-validation-rules)).
 
 #### uwsgi Suite
 

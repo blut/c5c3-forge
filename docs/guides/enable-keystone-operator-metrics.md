@@ -19,7 +19,7 @@ For the controller-side instrumentation contract, see
 ::: tip On kind
 If you are running the kind Quick Start, the prometheus-operator CRDs,
 Prometheus, Grafana, and the bundled `Keystone Operator` dashboard are
-already wrapped behind a single opt-in flag — none of the manual steps
+already wrapped behind a single opt-in flag; none of the manual steps
 below are required:
 
 ```bash
@@ -34,8 +34,8 @@ for the scrape targets to come up. See
 for the port-forward, default credentials, and the Prometheus targets
 sanity-check.
 
-The remainder of this guide is the **canonical non-kind path** —
-production overlays (`deploy/flux-system/`) deliberately omit the
+The remainder of this guide is the **canonical non-kind path**:
+production overlays (`deploy/flux-system/`) omit the
 stack so production clusters can wire their own Prometheus, and the
 sections below cover that wiring end-to-end.
 :::
@@ -53,7 +53,7 @@ KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
 is running with kube-prometheus-stack scraping it. (On kind the `WITH_PROMETHEUS`
-opt-in above wires the manual steps below automatically — see the tip above.)
+opt-in above wires the manual steps below automatically; see the tip above.)
 :::
 
 - A cluster with the `keystone-operator` Helm release installed and the
@@ -236,7 +236,7 @@ Operators with stricter cluster policies must take extra steps:
   east-west traffic by default need an explicit ingress
   NetworkPolicy permitting the Prometheus Pod's selector to reach the
   operator on port `8080`. The operator chart ships this as
-  `networkPolicy.allowMetricsFrom` — see
+  `networkPolicy.allowMetricsFrom`; see
   [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md).
   Without it the ServiceMonitor renders successfully but every scrape
   times out and the target reports `Down`.
@@ -252,13 +252,13 @@ Operators with stricter cluster policies must take extra steps:
   `internal/common/bootstrap/manager.go` to the controller-runtime
   `SecureServing` configuration and bind a cert/key pair (for example by
   mounting a cert-manager-issued Secret on the operator Deployment). The chart
-  does not ship this configuration — it is a forge-wide bootstrap change rather
+  does not ship this configuration: it is a forge-wide bootstrap change rather
   than a per-operator override.
 
-The metrics endpoint deliberately exposes **no credentials, secrets,
-or per-tenant payloads** — only Prometheus collector samples described
+The metrics endpoint exposes **no credentials, secrets,
+or per-tenant payloads**, only Prometheus collector samples described
 in the
-[reference catalogue](../reference/keystone-operator-metrics.md) — so
+[reference catalogue](../reference/keystone-operator-metrics.md), so
 the default plain-HTTP exposure is appropriate for cluster-internal
 scraping. The hardening guidance above applies only when external
 policy demands a stricter posture.
@@ -277,7 +277,7 @@ helm upgrade keystone-operator \
   --set monitoring.serviceMonitor.enabled=false
 ```
 
-The operator continues to serve `/metrics` on port `8080` — only the
+The operator continues to serve `/metrics` on port `8080`; only the
 ServiceMonitor (and therefore the Prometheus scrape) is removed.
 
 ---

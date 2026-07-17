@@ -46,17 +46,17 @@ The custom managers cover:
 - **K-ORC Flux source** — the `ref.tag` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (github-releases). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the Renovate-tracked `k-orc/openstack-resource-controller` Go module the operator compiles against.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
 
-Major updates are **disabled** for all custom-regex managers — these touch deploy-time
+Major updates are **disabled** for all custom-regex managers: these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
 human-driven coordination.
 
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
 weekly re-lock PR. That PR is **not** automerged: `nixos-unstable` is a rolling ref, so the
-re-lock is not a version bump and the 3-day cooldown cannot gate it — a reviewer confirms
+re-lock is not a version bump and the 3-day cooldown cannot gate it: a reviewer confirms
 the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
-bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
+bump needs **no** flake edit; see [Nix Development Environment](./nix-dev-environment.md).
 
 ---
 
@@ -69,14 +69,14 @@ The Go team ships a new minor release roughly every six months and supports the
 
 - Stay on a supported minor at all times.
 - Pick up patch releases (`1.X.Y` → `1.X.(Y+1)`) within the regular Renovate
-  flow — these are low-risk and grouped with other patch bumps.
+  flow: these are low-risk and grouped with other patch bumps.
 - Plan minor upgrades (`1.X` → `1.(X+1)`) within roughly one month of GA so
   the deprecation window before the *previous* minor falls out of support is
   comfortable.
 
 ### Where the Go version lives
 
-A minor upgrade must touch **every** location in the same PR — partial bumps
+A minor upgrade must touch **every** location in the same PR: partial bumps
 fail CI because `go.work` and the per-module `go.mod` directives must agree.
 
 | File                               | What to update                       | Notes                                                                        |
@@ -96,7 +96,7 @@ to individual `go.mod` files.
 
 ### Worked example: 1.25.10 → 1.26.3
 
-An illustrative past minor upgrade (the workspace has since moved on — at the time of
+An illustrative past minor upgrade (the workspace has since moved on; at the time of
 writing all four files are on `go 1.26.5`). Substitute the current and target versions
 for your own bump; the mechanics below are unchanged.
 
@@ -128,7 +128,7 @@ go work sync
 
 The shared operator Dockerfile (`operators/Dockerfile`, parameterized via
 `--build-arg OPERATOR=<op>`) carries the `FROM golang:1.26@sha256:…` builder line,
-maintained by Renovate — confirm that the digest update has landed on `main` *before*
+maintained by Renovate: confirm that the digest update has landed on `main` *before*
 opening the minor-bump PR, otherwise the builder image lags behind the `go.mod`
 directive and CI fails on the image-build job.
 
@@ -158,12 +158,12 @@ errors. After `go vet ./...` runs clean from each module, check the release
 notes for:
 
 - **New `vet` analyzers.** A minor bump may add an analyzer that triggers on
-  patterns the codebase has tolerated for years. If the warning is
-  load-bearing, fix it; if it is noise on the path the project has chosen,
+  patterns the codebase has tolerated for years. If the warning flags a real
+  bug, fix it; if it is noise on a path the project has intentionally kept,
   add a targeted exclusion in `.golangci.yml`.
 - **`stdlib` deprecations.** Search for newly-deprecated stdlib symbols
   (`grep -rn 'pkg.OldFunc\|pkg.OldType' --include='*.go'`) and replace them.
-  Avoid making this part of the upgrade PR if the replacement is invasive —
+  Avoid making this part of the upgrade PR if the replacement is invasive:
   open a follow-up.
 - **Toolchain selection changes.** `go.work` and `go.mod` only set the
   *minimum* required Go. They do not pin the toolchain that builds the
@@ -177,7 +177,7 @@ production:
 1. Revert the single upgrade commit (`git revert <sha>`); the revert is
    self-contained because all four files moved together.
 2. If the regression is from a *new vet analyzer*, prefer adding the
-   analyzer exclusion to `.golangci.yml` and rolling forward — revert is
+   analyzer exclusion to `.golangci.yml` and rolling forward: revert is
    cheap, but the deprecation window of the previous minor will eventually
    force the upgrade.
 3. Record the regression in the upgrade issue with a reproducer; do not
@@ -213,8 +213,8 @@ Kubernetes Go packages are versioned in lockstep. **Never** bump just one of:
 
 …without bumping the others to the **same** `v0.X.Y`. Renovate groups these
 under a single PR, but if you cherry-pick from a Renovate PR or open a
-manual bump, keep them aligned. The same applies to `sigs.k8s.io/controller-runtime`
-— it has a hard compatibility matrix with the `k8s.io/*` packages; consult the
+manual bump, keep them aligned. The same applies to `sigs.k8s.io/controller-runtime`:
+it has a hard compatibility matrix with the `k8s.io/*` packages; consult the
 [controller-runtime release notes](https://github.com/kubernetes-sigs/controller-runtime/releases)
 for the supported pairing before bumping either side.
 
@@ -253,7 +253,7 @@ FROM golang:1.26@sha256:6df14f4a4bc9d979a3721f488981e0d1b318006377e473ed23d02679
 The pattern (recently exercised in #330 and #342): the floating tag is
 human-readable and survives across minor bumps; the digest is the
 verifiable, immutable pin that production builds resolve. Both move
-together in Renovate PRs. Manual edits should preserve this shape — never
+together in Renovate PRs. Manual edits should preserve this shape: never
 drop the digest.
 
 Distroless and other runtime base images follow the same convention:
@@ -274,20 +274,20 @@ human-readable tag for review:
 
 The tag in the trailing comment is for humans. The SHA is what GitHub
 resolves. Renovate keeps both in sync. Never replace a SHA with a
-floating tag — supply-chain integrity for third-party actions depends on
+floating tag: supply-chain integrity for third-party actions depends on
 the SHA pin.
 
 ### Security updates (CVEs)
 
-CVE-driven bumps bypass the 3-day Renovate cooldown — merge as soon as CI
+CVE-driven bumps bypass the 3-day Renovate cooldown: merge as soon as CI
 is green. Triage order:
 
 1. **CVEs in our direct dependencies** (anything listed in a `go.mod`'s
-   direct `require ( … )` block) — top priority. Renovate flags these with
+   direct `require ( … )` block), the top priority. Renovate flags these with
    a high-priority label.
-2. **CVEs in indirect dependencies** that affect us — confirm via
+2. **CVEs in indirect dependencies** that affect us: confirm via
    `govulncheck` (run automatically in CI) before deciding urgency.
-3. **CVEs in base images** — bump the image digest and re-trigger the
+3. **CVEs in base images**: bump the image digest and re-trigger the
    image-build pipeline.
 
 If `govulncheck` reports a vulnerable indirect dependency that has no
@@ -302,7 +302,7 @@ Major bumps always need human review. Take a hypothetical
 `controller-runtime` v0.23 → v1.0 PR:
 
 1. **Read the upstream release notes** in full. controller-runtime
-   typically gates Kubernetes API compatibility on its minor versions —
+   typically gates Kubernetes API compatibility on its minor versions:
    confirm the supported k8s.io pairing matches the version we ship.
 2. **Confirm the API surface we touch.** Search the codebase:
 
@@ -324,7 +324,7 @@ Major bumps always need human review. Take a hypothetical
    feedback; for behavior changes, read the controller-runtime CHANGELOG
    for the entries between the two versions.
 5. **Run unit tests and the keystone e2e suite locally** (`make test`,
-   `make e2e`) before pushing — major operator-framework bumps regularly
+   `make e2e`) before pushing: major operator-framework bumps regularly
    surface only at reconcile-time, not at compile-time.
 6. **Open a dedicated PR**, not a Renovate edit. Link the upstream
    release notes, the list of API surfaces touched, and the e2e run
@@ -354,7 +354,7 @@ modules.
 
 Renovate auto-merge fires only after the full required-checks set is
 green. The set is enforced by branch protection on `main`; the most
-load-bearing for dependency PRs are:
+critical for dependency PRs are:
 
 - `lint`, `format-check`, `govulncheck`
 - `test` (all three modules)
@@ -364,7 +364,7 @@ load-bearing for dependency PRs are:
 - `build-e2e-images` (when image or workflow files change)
 
 For a manual merge, wait for the same checks even if Renovate's
-auto-merge would have skipped any of them due to path filters — the
+auto-merge would have skipped any of them due to path filters: the
 filters are an optimization, not an exemption.
 
 ---

@@ -7,7 +7,7 @@ quadrant: operator
 
 The Keystone operator deploys and manages the OpenStack Identity Service as a
 Kubernetes-native workload. It is the reference implementation for all CobaltCore
-service operators — the patterns established here (CRD layout, sub-reconciler
+service operators: the patterns established here (CRD layout, sub-reconciler
 chain, webhooks, finalizers, instrumentation) will be replicated for Nova,
 Neutron, Glance, and other OpenStack service operators.
 
@@ -16,10 +16,10 @@ in-depth reference doc for that area.
 
 ## Lifecycle and Reconciliation
 
-- **Sub-reconciler chain.** A focused pipeline of sub-reconcilers — Secrets →
+- **Sub-reconciler chain.** A focused pipeline of sub-reconcilers: Secrets →
   DatabaseTLS → DBConnectionSecret → IdentityBackends → Config → FernetKeys /
   CredentialKeys / NetworkPolicy → Database → PolicyValidation → Deployment →
-  HTTPRoute → HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation —
+  HTTPRoute → HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation,
   each emitting a typed sub-condition that aggregates into `Ready`. See
   [Reconciler Architecture](./keystone-reconciler.md).
 - **Parallel execution group.** FernetKeys, CredentialKeys and NetworkPolicy
@@ -41,7 +41,7 @@ in-depth reference doc for that area.
   (replicas, resources, rollout `strategy`, graceful-termination timings,
   topologySpreadConstraints, priorityClassName).
 - **Status with sub-conditions.** Fifteen typed sub-conditions plus
-  `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
+  `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint`,
   surfaced via `kubectl get keystones` printer columns.
 - **Validating + Defaulting webhooks.** CEL validation rules enforced by the
   API server (database/cache exclusivity, autoscaling targets, replica/key
@@ -57,8 +57,8 @@ See [CRD API Reference](./keystone-crd.md) and
 ## Identity Backends (LDAP/AD Domains)
 
 - **Attachable domain CRD.** One `KeystoneIdentityBackend` CR per LDAP/AD
-  domain — connection, bind credentials, tree/attribute mapping, read-only
-  mode, TLS, `extraOptions` — attached via `spec.keystoneRef`.
+  domain (connection, bind credentials, tree/attribute mapping, read-only
+  mode, TLS, `extraOptions`) attached via `spec.keystoneRef`.
 - **Dedicated controller + keystone-side projection.** The backend
   controller owns finalizer, domain provisioning (Manage/Adopt), and the
   per-backend `DomainReady`/`ConfigProjected`/`Ready` conditions; the
@@ -133,7 +133,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
 
 - **Active HTTP health check** against the Keystone API endpoint drives the
   `KeystoneAPIReady` condition. Injectable HTTP client for tests.
-- **Kubernetes Events** for every state transition — bootstrap, db_sync,
+- **Kubernetes Events** for every state transition: bootstrap, db_sync,
   upgrade phases, key generation, deployment rollout. Catalogued in
   [Controller Events](./keystone-events.md).
 - **Prometheus metrics + ServiceMonitor.** Reconcile duration, per-condition

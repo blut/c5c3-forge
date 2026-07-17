@@ -9,8 +9,8 @@ This guide walks through federating a running Keystone with a SAML 2.0
 identity provider using the `KeystoneIdentityBackend` CRD: supply the IdP
 metadata, apply one CR, watch the conditions converge, export the generated
 service-provider (SP) metadata, register it at the IdP out of band, and
-verify a federated user can log in. The worked example uses Keycloak — the
-same IdP the mirroring e2e suite ([Tested by](#tested-by)) deploys — so every
+verify a federated user can log in. The worked example uses Keycloak, the
+same IdP the mirroring e2e suite ([Tested by](#tested-by)) deploys, so every
 value is adaptable to a kind cluster.
 
 SAML reuses almost all of the OIDC federation machinery: the same
@@ -44,7 +44,7 @@ examples below is one that devstack produces.
   `ghcr.io/c5c3/keystone-federation-proxy` automatically; standalone
   Keystone installations set `spec.federation.proxyImage` themselves.
   Without it, federation backends stay pending with a
-  `FederationProxyImageMissing` Warning — no hidden default is assumed.
+  `FederationProxyImageMissing` Warning. No hidden default is assumed.
 - **Service users stay SQL-backed.** Federated users are ephemeral shadow
   users; OpenStack service accounts and the bootstrap admin remain in the
   SQL-backed `Default` domain, which the CRD hard-rejects federating.
@@ -75,7 +75,7 @@ Pick exactly one of the three sources for `spec.saml.idpMetadata`:
 ## Step 2 — Configure the SP certificate (optional)
 
 By default the operator generates a self-signed SP keypair once (stored in
-the stable-named `<keystone>-saml-sp` Secret) and never rotates it —
+the stable-named `<keystone>-saml-sp` Secret) and never rotates it:
 regeneration would invalidate the IdP-side registration. IdPs pin the SP
 certificate from the SP metadata, where self-signed is standard.
 
@@ -170,7 +170,7 @@ list.
 The attribute names are **case-sensitive** and forwarded verbatim, but the
 HTTP header hop uppercases them: an assertion attribute `username` arrives at
 Keystone as the WSGI environ key `HTTP_MELLON_USERNAME`. Your mapping rules
-must reference the **uppercased** spelling — a mapping remote type of
+must reference the **uppercased** spelling: a mapping remote type of
 `HTTP_MELLON_username` silently matches nothing. See the troubleshooting
 table below.
 

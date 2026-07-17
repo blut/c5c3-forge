@@ -15,8 +15,8 @@ stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
 c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, and `Horizon`
 children, mint the admin application credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirror it to
-OpenBao, and register the identity catalog — all reconciled to an aggregate
-`Ready`.
+OpenBao, and register the identity catalog. All of it reconciles to an
+aggregate `Ready`.
 
 ## Prerequisites
 
@@ -27,22 +27,23 @@ The bundled kind `ControlPlane` CR pins its backing services to a single instanc
 (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so the
 fresh-create chain fits a single-node kind cluster: `database.replicas: 1` yields
 a single-instance, non-Galera MariaDB (the operator derives Galera from
-`replicas > 1`) and `cache.replicas: 1` a single Memcached pod. The CRD default for
-both is `3` — a 3-node Galera cluster plus three Memcached pods, matching the
-production baseline — which OOM-kills a laptop-sized kind. To provision the
+`replicas > 1`) and `cache.replicas: 1` a single Memcached pod. The CRD default
+for both is `3`: a 3-node Galera cluster plus three Memcached pods, matching
+the production baseline, which OOM-kills a laptop-sized kind. To provision the
 production-shaped topology on a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
-`CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 (`2` is rejected for the database —
+`CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 (`2` is rejected for the database;
 Galera needs a quorum). `database.replicas` is immutable after the CR is created,
 so change it on a fresh environment (`make teardown-infra` first).
 
 The bundled CR also pins the MariaDB volume to a test size
-(`spec.infrastructure.database.storageSize: 512Mi`). The CRD default is `100Gi` —
-the production volume size — which a kind/CI run never fills, so the managed MariaDB
-requests a small volume instead. To mirror the production volume on a bigger box,
-set `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2 (any Kubernetes quantity in
-`Mi`/`Gi`/`Ti` is accepted). Like `database.replicas`, `database.storageSize` is
-immutable after the CR is created — the MariaDB operator refuses to resize a live
-volume — so change it on a fresh environment (`make teardown-infra` first).
+(`spec.infrastructure.database.storageSize: 512Mi`). The CRD default is
+`100Gi`, the production volume size, which a kind/CI run never fills, so the
+managed MariaDB requests a small volume instead. To mirror the production
+volume on a bigger box, set `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2 (any
+Kubernetes quantity in `Mi`/`Gi`/`Ti` is accepted). Like `database.replicas`,
+`database.storageSize` is immutable after the CR is created (the MariaDB
+operator refuses to resize a live volume), so change it on a fresh environment
+(`make teardown-infra` first).
 
 ```bash
 make install-test-deps
@@ -76,31 +77,35 @@ deploy-infra pins them to the digest current at deploy time (per-operator
 image-digest ConfigMaps consumed by the HelmReleases via `valuesFrom`). After
 a feature merges to `main`, run `make refresh-operator-digests` against the
 running cluster: it re-resolves the digests, updates the ConfigMaps, and
-requests a Flux reconcile so the operators roll to the freshly built images —
-no redeploy needed.
+requests a Flux reconcile so the operators roll to the freshly built images,
+with no redeploy needed.
 :::
 
 ## Step 3 — Create the ControlPlane CR
 
-Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.
-You only supply `openStackRelease` and the `services.keystone` block: the
-defaulting webhook fills the infrastructure and admin-credential references with
-their well-known names — `openstack-db` (managed MariaDB), `openstack-memcached`
-(managed Memcached), `keystone-db` (DB-credential placeholder — in managed mode
-the operator projects a per-ControlPlane `{name}-keystone-db-credentials`
-Secret and points the Keystone CR at it instead), `keystone-admin` / `password`
-(admin-password placeholder — in managed mode the operator projects a per-ControlPlane
-`{name}-keystone-admin-credentials` Secret and points the Keystone CR at it instead),
-`k-orc-clouds-yaml` with cloud entry `admin`
-(K-ORC clouds.yaml) — which match the Secrets and clusters the infrastructure
-layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
-`clouds.yaml` per-CR, deriving the in-cluster Keystone auth URL from the CR's own
-name, so the CR name is no longer pinned by a pre-seeded `clouds.yaml`; to use a
-different name, pass `CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR
-and seeds the matching admin password. The defaulting only fills the
-names/references; the operator still **consumes** the pre-seeded Secret *content*
-(DB credentials, admin password) and materialises the bootstrap `clouds.yaml`
-itself, so it does **not invent** credentials.
+Apply a `ControlPlane` CR and the c5c3-operator reconciles it into the whole
+stack. You only supply `openStackRelease` and the `services.keystone` block;
+the defaulting webhook fills the infrastructure and admin-credential
+references with well-known names that match what the infrastructure layer
+(Step 2) seeds:
+
+- `openstack-db` (managed MariaDB) and `openstack-memcached` (managed
+  Memcached).
+- `keystone-db` (DB-credential placeholder): in managed mode the operator
+  projects a per-ControlPlane `{name}-keystone-db-credentials` Secret and
+  points the Keystone CR at it instead.
+- `keystone-admin` / `password` (admin-password placeholder): the same
+  pattern, via a per-ControlPlane `{name}-keystone-admin-credentials` Secret.
+- `k-orc-clouds-yaml` with cloud entry `admin` (K-ORC `clouds.yaml`).
+
+The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR, deriving the
+in-cluster Keystone auth URL from the CR's own name, so the CR name is no
+longer pinned by a pre-seeded `clouds.yaml`. To use a different name, pass
+`CONTROLPLANE_NAME=foo` to Step 2; it renames the bundled CR and seeds the
+matching admin password. The defaulting only fills the names/references: the
+operator still **consumes** the pre-seeded Secret *content* (DB credentials,
+admin password) and materialises the bootstrap `clouds.yaml` itself, so it
+does **not invent** credentials.
 
 ```yaml
 # controlplane.yaml
@@ -226,11 +231,11 @@ spec:
 In managed mode the ControlPlane defaults to engine-issued (**Dynamic**) Keystone
 DB credentials: ESO draws short-lived MySQL users from the OpenBao
 database engine at `database/mariadb/creds/keystone-<namespace>`. The
-c5c3-operator only **reads** from that path — the engine connection and the
+c5c3-operator only **reads** from that path. The engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
 `deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
-Here `<namespace>` is the **Keystone service namespace** — the ControlPlane's own
+Here `<namespace>` is the **Keystone service namespace**: the ControlPlane's own
 namespace (`openstack`) in this quick start, and only different when
 `spec.services.keystone.namespace` places the Keystone service in a namespace of
 its own. The onboarding script resolves it from the live ControlPlane spec, so
@@ -253,13 +258,14 @@ unset BAO_TOKEN
 The two arguments are the ControlPlane **namespace** and **name** (`openstack
 controlplane` here; adjust the second one if you renamed the CR via
 `CONTROLPLANE_NAME` in Step 2). `BAO_TOKEN` is read from the `openbao-init-keys`
-Secret where deploy-infra stores the root token — kind-only plumbing; against a
-production OpenBao use a token with write access to `database/mariadb/*`. The
-script is idempotent: re-running it refreshes the connection and role in place.
+Secret where deploy-infra stores the root token; that's kind-only plumbing, so
+against a production OpenBao use a token with write access to
+`database/mariadb/*`. The script is idempotent: re-running it refreshes the
+connection and role in place.
 
 Skip this step only when:
 
-- Step 2 ran with `WITH_CONTROLPLANE_CR=true` — deploy-infra then onboards the
+- Step 2 ran with `WITH_CONTROLPLANE_CR=true`: deploy-infra then onboards the
   bundled ControlPlane automatically, or
 - the ControlPlane opts out of Dynamic credentials with
   `spec.infrastructure.database.credentialsMode: Static` (see
@@ -270,7 +276,7 @@ The reconcile chain stalls before any Keystone or Horizon child is created: the
 ControlPlane reports `DBCredentialsReady=False` (reason
 `WaitingForDBCredentialSecret`), the `controlplane-keystone-db-credentials`
 ExternalSecret sits in `SecretSyncedError`, and the external-secrets controller
-logs `unknown role: keystone-<namespace>`. Nothing is lost — run the onboarding
+logs `unknown role: keystone-<namespace>`. Nothing is lost: run the onboarding
 script and ESO syncs the credential on its next retry.
 :::
 
@@ -310,8 +316,8 @@ kubectl wait controlplane/controlplane -n openstack \
 ## Step 6 — Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
-at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-service
-[Quick Start](./quick-start.md), no port-forward.
+at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the
+per-service [Quick Start](./quick-start.md); no port-forward.
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
@@ -332,7 +338,7 @@ openstack --insecure token issue
 > The admin password is read from the operator-owned per-ControlPlane Secret
 > `controlplane-keystone-admin-credentials` (named `{ControlPlane name}-keystone-admin-credentials`).
 > In managed mode the c5c3-operator always projects this Secret, so the command holds
-> for any identity — if you set `CONTROLPLANE_NAME=foo` in Step 2, read
+> for any identity: if you set `CONTROLPLANE_NAME=foo` in Step 2, read
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
@@ -347,13 +353,14 @@ its own `horizon.127-0-0-1.nip.io` listener:
 open https://horizon.127-0-0-1.nip.io:8443/
 ```
 
-Your browser will warn that the certificate is not trusted — expected for a kind
-cluster (the listener terminates with a self-signed certificate). Log in with
+Your browser will warn that the certificate is not trusted; that's expected
+for a kind cluster (the listener terminates with a self-signed certificate).
+Log in with
 `admin` / the password from the `controlplane-keystone-admin-credentials` Secret
 above (domain `Default`).
 
 After login the dashboard redirects to `/project/`, which reports
-"Unauthorized" — the default landing page needs Compute/Network services this
+"Unauthorized": the default landing page needs Compute/Network services this
 control plane does not serve yet. Open the Identity panel instead:
 
 ```bash

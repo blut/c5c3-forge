@@ -9,7 +9,7 @@ This guide walks an operator through opting a control plane's Keystone into
 encrypted, mutually-authenticated connections to MariaDB/MaxScale. On a
 ControlPlane deployment the knob lives on the `ControlPlane` CR
 (`spec.infrastructure.database.tls`); the c5c3-operator projects the whole
-database block — including `tls` — onto the projected `controlplane-keystone`
+database block (including `tls`) onto the projected `controlplane-keystone`
 child. When enabled, the keystone-operator provisions a cert-manager
 `Certificate` from the shared OpenStack DB CA, mounts the resulting keypair into
 every Keystone workload that opens a database connection, and appends the
@@ -64,12 +64,12 @@ examples below is one that devstack produces.
 3. **A MariaDB that offers server-side TLS.** Client-side DB TLS only works
    against a server that speaks it. On the **managed** ControlPlane devstack the
    c5c3-operator provisions the `openstack-db` MariaDB from a minimal spec and
-   deliberately leaves server-side TLS/issuerRefs unset — DB-server hardening is a
+   leaves server-side TLS/issuerRefs unset: DB-server hardening is a
    platform-team concern outside the aggregate's knowledge (see the DECISION on
    `reconcileInfrastructure` in `operators/c5c3/internal/controller/reconcile_infrastructure.go`).
    So before enabling client DB TLS on a ControlPlane, run a MariaDB with
    `spec.tls.enabled=true` (and, for the plaintext-rejection check below,
-   `required=true`) — either harden the managed MariaDB out-of-band or point
+   `required=true`): either harden the managed MariaDB out-of-band or point
    `spec.infrastructure.database` at a brownfield MariaDB that already enables TLS
    via the same `openstack-db-ca-issuer`. Confirm the cluster is healthy:
 
@@ -81,7 +81,7 @@ examples below is one that devstack produces.
 
    ::: warning Do not enable `verify-full` against a plaintext MariaDB
    Enabling `verify-full` client TLS against a MariaDB that offers no server TLS
-   breaks the connection — the child Keystone reports `DatabaseReady=False`.
+   breaks the connection: the child Keystone reports `DatabaseReady=False`.
    The [standalone Quick Start](#standalone-keystone-without-a-controlplane)
    devstack ships its `openstack-db` with `spec.tls.required=true`, so the
    standalone flow at the end of this guide is fully runnable end-to-end without
@@ -107,9 +107,9 @@ examples below is one that devstack produces.
 
 Set the `tls` block on the `ControlPlane` CR's shared database, **not** on the
 projected Keystone child. The reconciler deep-copies the whole
-`spec.infrastructure.database` block — `tls` included — onto
+`spec.infrastructure.database` block (`tls` included) onto
 `controlplane-keystone` on every reconcile. The minimal TLS-enabled block uses
-`mode: verify-full` (the strongest mode — verifies the server certificate chain
+`mode: verify-full` (the strongest mode: verifies the server certificate chain
 AND that the server hostname matches the certificate identity). In managed mode,
 the keystone-operator provisions the Secret `controlplane-keystone-db-client`
 carrying `ca.crt`, `tls.crt`, and `tls.key`, so a single reference satisfies both
@@ -157,7 +157,7 @@ Always set `tls` on the `ControlPlane` CR.
 :::
 
 The keystone-operator's mutating webhook does **not** materialize the `tls` block
-on the child when it is absent — TLS is strictly opt-in. When `tls` is present
+on the child when it is absent: TLS is strictly opt-in. When `tls` is present
 with an empty `mode`, the webhook materializes `mode: "require"` as the documented
 baseline (a present block means "on"). Set `mode: disabled` to keep the block and
 its certificate references while turning TLS off.
@@ -239,7 +239,7 @@ conn.close()
 
 Expected: a non-empty TLS cipher name (e.g.,
 `TLS_AES_256_GCM_SHA384`). An empty value means the live connection is **not**
-encrypted — re-check `DatabaseTLSReady` and confirm the MariaDB CR has
+encrypted: re-check `DatabaseTLSReady` and confirm the MariaDB CR has
 `spec.tls.required=true` (see prerequisite 3).
 
 ### 3. Plaintext connections are rejected by MariaDB
@@ -247,9 +247,9 @@ encrypted — re-check `DatabaseTLSReady` and confirm the MariaDB CR has
 This check requires the MariaDB from prerequisite 3 to set
 `spec.tls.required=true`, so any connection that does not negotiate TLS is
 rejected at the transport layer before authentication. The `probe`/`probe`
-credentials below are deliberately bogus — they are never checked, because the
+credentials below are bogus: they are never checked, because the
 server rejects the plaintext handshake before it reaches authentication. Probe
-from inside the Keystone Pod by deliberately omitting the `ssl=` kwarg:
+from inside the Keystone Pod by omitting the `ssl=` kwarg:
 
 ```bash
 kubectl -n openstack exec "$POD" -c keystone -- python3 -c '
@@ -275,7 +275,7 @@ Expected: `PLAINTEXT_REJECTED: …` from the server's TLS-required enforcement.
 > the Keystone side **only** will brick the deployment: MariaDB rejects every
 > plaintext handshake at the transport layer, so Keystone cannot connect to the
 > database. Before applying the ControlPlane patch below, set
-> `spec.tls.required=false` (or fully disable TLS) on the MariaDB CR — updating
+> `spec.tls.required=false` (or fully disable TLS) on the MariaDB CR: updating
 > MariaDB is out of scope of this guide but is a prerequisite for a working
 > plaintext deployment.
 
@@ -294,9 +294,9 @@ The child's `DatabaseTLSReady` condition transitions to `True` with
 `reason=NotRequired`, the operator deletes the managed
 `controlplane-keystone-db-client` `Certificate` (so cert-manager stops renewing
 it), cert-manager then garbage-collects the issued Secret via the `Certificate`
-owner-reference cascade, and subsequent connections fall back to plaintext TCP —
-but only succeed if MariaDB's `spec.tls.required` is also turned off (see warning
-above).
+owner-reference cascade, and subsequent connections fall back to plaintext TCP.
+But they only succeed if MariaDB's `spec.tls.required` is also turned off (see
+warning above).
 
 ---
 
@@ -305,7 +305,7 @@ above).
 On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it, and the shared `openstack-db` MariaDB ships with
-`spec.tls.enabled=true, required=true` — so this flow is fully runnable
+`spec.tls.enabled=true, required=true`: this flow is fully runnable
 end-to-end without extra MariaDB hardening. Set the `tls` block on the Keystone
 CR's own `spec.database`:
 
@@ -355,8 +355,8 @@ mechanics through this standalone flow.
 
 ## Tested by
 
-The canonical check pins all three verifications above — `DatabaseTLSReady=True`,
-the encrypted live connection, and the plaintext rejection — against a standalone
+The canonical check pins all three verifications above (`DatabaseTLSReady=True`,
+the encrypted live connection, and the plaintext rejection) against a standalone
 Keystone CR whose `openstack-db` ships `tls.required=true`. Run it on the CI e2e
 kind cluster:
 

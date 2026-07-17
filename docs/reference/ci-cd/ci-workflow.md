@@ -40,7 +40,7 @@ The workflow triggers on three event types:
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; includes `labeled` type to support on-demand chaos via `run-chaos` label |
 
-Gate, test, and E2E jobs run **only on `pull_request` events** — every one of them
+Gate, test, and E2E jobs run **only on `pull_request` events**: every one of them
 carries a `github.event_name == 'pull_request'` guard. Pushes to `main` and tag pushes
 (`v*`) run only the publish and release jobs (`build-and-push`,
 `merge-operator-images`, `helm-push`, `github-release`): the merged commit's PR was
@@ -171,7 +171,7 @@ Runs golangci-lint using the project's `.golangci.yml` configuration.
 The `golangci-lint-action@v9` step is used with `install-only: true`, which installs the
 pinned golangci-lint binary (and caches it) without running lint. The actual linting is
 delegated to `make lint`, which `cd`s into each module directory and runs
-`golangci-lint run ./...` — a necessary pattern for Go multi-module workspaces. The
+`golangci-lint run ./...`: a necessary pattern for Go multi-module workspaces. The
 `actions/setup-go@v6` step is required because `install-only` mode does not set up Go
 internally.
 
@@ -198,7 +198,7 @@ Generated code matching `zz_generated.*.go` is excluded from all lint checks via
 ### format-check
 
 Verifies all Go files conform to gofumpt formatting. gofumpt is a strict superset
-of gofmt — it applies all standard gofmt rules plus additional formatting conventions for
+of gofmt: it applies all standard gofmt rules plus additional formatting conventions for
 consistency. Detects non-conforming files and prints a unified diff showing the required
 changes, so developers can identify and fix formatting issues without guessing.
 
@@ -208,7 +208,7 @@ on generated, vendored, or tooling code that may not follow gofumpt conventions.
 The same version and check logic are available locally via the Makefile: `make install-gofumpt`
 installs the pinned version, `make format-check` mirrors the CI check, and `make fmt` applies
 formatting to all tracked Go files. The Makefile targets use `xargs` without the `-r` flag
-(unlike CI) for macOS portability — BSD `xargs` does not support `-r`. This is safe because
+(unlike CI) for macOS portability: BSD `xargs` does not support `-r`. This is safe because
 the repository always contains tracked `.go` files.
 
 **Dependencies:** `needs: [changes]`
@@ -243,8 +243,8 @@ Timeout: 5 minutes.
 ### feature-ids
 
 Verifies the whole tracked tree (code, tests, CI, scripts, docs) is free of internal
-feature/requirement IDs. Runs unconditionally on every pull request — not
-path-filtered — so a stray ID added anywhere is caught. This job folds in the former
+feature/requirement IDs. Runs unconditionally on every pull request (not
+path-filtered), so a stray ID added anywhere is caught. This job folds in the former
 docs-only check.
 
 | Step | Action | Details |
@@ -275,7 +275,7 @@ Timeout: 5 minutes.
 
 Schema-lints every Chainsaw test (`tests/**/chainsaw-test.yaml`) and configuration
 (`tests/{e2e,e2e-chaos}/chainsaw-config.yaml`) via `chainsaw lint` so typos, removed
-fields, or schema drift after a chainsaw version bump fail fast — before the
+fields, or schema drift after a chainsaw version bump fail fast, before the
 cluster-bound `e2e-operator` and `e2e-chaos` jobs spin up a kind cluster. Always-on
 because no cluster is needed: chainsaw is restored from the shared testdeps cache via
 the `setup-test-deps` composite action, the same one consumed internally by
@@ -293,7 +293,7 @@ Timeout: 5 minutes.
 ### test-shell
 
 Runs every shell unit test under `tests/unit/` (hack/, deploy/, docs/,
-renovate/). Tests read repo files only — no cluster, no untrusted input —
+renovate/). Tests read repo files only (no cluster, no untrusted input),
 so the job is unconditional and finishes in well under a minute on a cold
 runner. Tests that depend on `yq` or `kustomize` are written to skip
 gracefully when those tools are missing; the job installs `kustomize`
@@ -311,7 +311,7 @@ Timeout: 5 minutes.
 ### test
 
 Runs unit tests with a matrix strategy over `[common, keystone, c5c3]`.
-Each matrix leg tests a single target — either `internal/common` or one operator — producing
+Each matrix leg tests a single target (either `internal/common` or one operator), producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
 | Step | Action | Details |
@@ -379,7 +379,7 @@ Timeout: 15 minutes (longer than unit tests to account for envtest startup).
 ### test-race
 
 Runs all Go unit tests with the race detector enabled to catch data races in concurrent
-operator code — reconcilers, watches, informer caches. Separate from the main
+operator code (reconcilers, watches, informer caches). Separate from the main
 `test` job because the race detector adds 2–5x overhead. Uses `-count=1` to disable test
 caching, since race conditions are non-deterministic and cached results could mask real
 races.
@@ -396,8 +396,8 @@ races.
 
 CI delegates to `make test-race` so the list of modules under race testing is defined in one
 place (the Makefile's `OPERATORS` variable and `internal/common`). `RACE_FLAGS="-count=1"`
-disables test caching — race conditions are non-deterministic, so cached results could mask
-real races. No `continue-on-error` or `if: always()` — a detected data race fails the job
+disables test caching: race conditions are non-deterministic, so cached results could mask
+real races. No `continue-on-error` or `if: always()`: a detected data race fails the job
 immediately.
 
 This job runs independently and does **not** appear in any other job's `needs:` array. It is
@@ -412,7 +412,7 @@ Timeout: 20 minutes (accommodates 2–5x race detector overhead).
 Scans all Go modules for reachable vulnerabilities using govulncheck, the official Go
 vulnerability scanner maintained by the Go team. Unlike dependency-list scanners,
 govulncheck analyses call graphs to detect only vulnerabilities in code paths that are
-actually reachable — reducing false positives. Catches supply-chain vulnerabilities at the
+actually reachable, reducing false positives. Catches supply-chain vulnerabilities at the
 PR stage, before container images are built.
 
 **Dependencies:** `needs: [changes]`
@@ -426,7 +426,7 @@ PR stage, before container images are built.
 | 3 | `go install golang.org/x/vuln/cmd/govulncheck@latest` | Installs the latest govulncheck binary |
 | 4 | `make govulncheck` | Delegates to `hack/ci-govulncheck.sh`, which scans `internal/common` and all `$(OPERATORS)` modules with an explicit allowlist |
 
-govulncheck uses `@latest` intentionally — unlike other pinned tools (controller-gen,
+govulncheck uses `@latest` intentionally: unlike other pinned tools (controller-gen,
 gofumpt), pinning govulncheck to an old version defeats the purpose of vulnerability
 scanning because the vulnerability database is updated frequently. This is a deliberate
 deviation from the general pinning policy, justified by the security tool's nature.
@@ -436,7 +436,7 @@ The CI step delegates to `make govulncheck`, which runs `hack/ci-govulncheck.sh`
 has no native suppression flag, so the wrapper runs it in JSON mode per module, keeps
 only the *reachable* symbol-level findings (the ones that fail the default text report),
 and drops any whose advisory ID appears in the script's `ALLOWLIST` map. The build fails
-if, and only if, a reachable finding survives the allowlist — matching govulncheck's
+if, and only if, a reachable finding survives the allowlist, matching govulncheck's
 normal failure semantics while letting the project ride out advisories that have no fix
 and no real exposure. Every allowlist entry carries a one-line justification, and if an
 allowlisted advisory is no longer reported, the wrapper prints a notice so the stale
@@ -455,7 +455,7 @@ Timeout: 10 minutes.
 ### verify-codegen
 
 Verifies that generated code (CRD manifests, deepcopy functions) is committed and
-up-to-date. This is a gate job — it blocks merge alongside `lint`,
+up-to-date. This is a gate job: it blocks merge alongside `lint`,
 `test`, and `shellcheck`.
 
 | Step | Action | Details |
@@ -570,7 +570,7 @@ rebuilding, saving ~5-10 min per CI run.
 and no gate job failed. Uses `always()` so the job runs when upstream Go jobs are
 skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
 forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
-`pull_request` events, so GHCR push would fail) — see `github.event.pull_request.head.repo.fork`
+`pull_request` events, so GHCR push would fail); see `github.event.pull_request.head.repo.fork`
 guard.
 
 **Permissions:** `contents: read`, `packages: write` (required for GHCR push).
@@ -589,7 +589,7 @@ guard.
 
 The "Resolve build operators" step guarantees that `keystone` is always in the build set.
 This is required because the `tempest` job hardcodes `keystone-operator:dev` and
-`keystone:<release>` — without the union, a pipeline triggered by a different operator
+`keystone:<release>`: without the union, a pipeline triggered by a different operator
 (e.g. glance) would fail tempest due to missing keystone images.
 
 GH-310 replaced the previous `docker save | zstd | upload-artifact` transport with
@@ -675,8 +675,8 @@ partition, MariaDB network latency). See
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
 tests run after the happy-path operator E2E suite has passed. Gating is set per
 matrix leg via `continue-on-error: ${{ matrix.suite == 'network' }}`: the `pod`
-leg is **blocking** — an operator-restart, PDB, or rotation regression fails the
-build — while the `network` leg stays **non-blocking**, because its
+leg is **blocking**: an operator-restart, PDB, or rotation regression fails the
+build, while the `network` leg stays **non-blocking**, because its
 `ip_set`/`sch_netem` kernel-module dependency is resolvable only on the
 GitHub-hosted runner and remains prone to environment flakiness. On-demand
 pre-validation of either leg is available via the `run-chaos` PR label.
@@ -719,8 +719,9 @@ fault recovery.
 
 **Path filter:** `tests/e2e-chaos/**`, `hack/**`, `deploy/**`, `.github/workflows/ci.yaml`, `.github/actions/**`
 (separate from `e2e_infra` to allow independent gating). Additionally, any Go code change
-— operator-specific (e.g., `operators/keystone/**/*.go`) or shared (`internal/common/**/*.go`
-via `go_common`) — triggers the job via `go_changed` in `ci-resolve-changes.sh`, since chaos
+triggers the job via `go_changed` in `ci-resolve-changes.sh`, whether operator-specific
+(e.g., `operators/keystone/**/*.go`) or shared (`internal/common/**/*.go` via
+`go_common`), since chaos
 tests validate operator resilience against the current codebase.
 
 ### e2e-prometheus
@@ -743,12 +744,12 @@ post-deploy `enable_operator_servicemonitor` patch (applied to both the
 keystone-operator and horizon-operator HelmReleases). The Deploy
 operator step runs `hack/ci-deploy-operator.sh` with `WITH_PROMETHEUS: "true"`
 in its step `env`, which adds `--set monitoring.serviceMonitor.enabled=true`
-to the Helm install command — without this flag the chart's gated
+to the Helm install command: without this flag the chart's gated
 `ServiceMonitor` template renders nothing and the chainsaw step
 `servicemonitor-exists` (and the dependent `prometheus-target-up`) cannot
 pass. The kind base kustomization keeps the keystone-operator HelmRelease
 suspended, so the runtime `kubectl patch` cannot reactively enable the
-ServiceMonitor — the install-time flag is the single source of truth.
+ServiceMonitor: the install-time flag is the single source of truth.
 
 Unlike `e2e-chaos`, `e2e-prometheus` runs with `continue-on-error: false`:
 the kube-prometheus stack is deterministic on kind, so any failure is a
@@ -797,7 +798,7 @@ subsequent steps own the reconcile. K-ORC is applied by `hack/ci-deploy-korc.sh`
 at the tag pinned in `deploy/flux-system/sources/k-orc.yaml`.
 
 The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
-presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
+presence guard from a silent SKIP to a hard failure, so a broken operator/CRD
 deployment fails the build instead of going green. Like `e2e-prometheus`, the
 job runs with `continue-on-error: false`, and it uses a 60-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + three operators +
@@ -806,7 +807,7 @@ OpenBao + ESO + K-ORC on one node is resource-heavy.
 ### e2e-controlplane-sso
 
 Runs the `tests/e2e-controlplane-sso/` Chainsaw suite: the end-user SSO
-experience — the Horizon websso projection, the login page's SSO choice and
+experience: the Horizon websso projection, the login page's SSO choice and
 domain dropdown, the websso round trip through the gateway, and LDAP-domain
 login. The suite lives outside `tests/e2e/` so the per-CR `e2e-operator` matrix
 leg, which runs `tests/e2e/<operator>/` wholesale, does not sweep it up.
@@ -814,7 +815,7 @@ leg, which runs `tests/e2e/<operator>/` wholesale, does not sweep it up.
 **A sibling job rather than a second suite directory on `e2e-controlplane`.**
 The ControlPlane webhook permits one ControlPlane per namespace, and
 `openstack-gw` sets `allowedRoutes.namespaces.from: Same` (the operators
-deliberately do not manage `ReferenceGrant`), so the two suites can share
+do not manage `ReferenceGrant`), so the two suites can share
 neither the `openstack` namespace nor the Gateway. Each therefore needs its own
 kind cluster.
 
@@ -828,7 +829,7 @@ It mirrors `e2e-controlplane`'s setup with `CONTROLPLANE_NAME: controlplane-sso`
 `keystone-federation-proxy:dev` into kind, because the suite's ControlPlane CR
 pins `services.keystone.federationProxyImage.tag: dev`. Without that override
 the suite would validate the sidecar already published on `main` rather than the
-one under review — which is why the `e2e_controlplane` path filter also watches
+one under review, which is why the `e2e_controlplane` path filter also watches
 `images/keystone-federation-proxy/**`.
 
 | Step | Action | Details |
@@ -858,7 +859,7 @@ Runs the `tests/e2e/c5c3/external-keystone/` Chainsaw suite: an External-mode
 `ControlPlane` driven against a plain Keystone the operator does **not** own. The
 suite brings up its own operator-free, SQLite-backed Keystone fixture in a
 separate namespace, then drives four External `ControlPlane`s against it and
-asserts the whole adoption contract — convergence with zero
+asserts the whole adoption contract: convergence with zero
 MariaDB/Memcached/Keystone children, admin and catalog imports, the application
 credential minted against the external API and round-tripped through OpenBao, no
 catalog pollution (compared against a pre-recorded inventory), service-account
@@ -879,11 +880,11 @@ MariaDB/Memcached), so it needs its own kind cluster.
 It mirrors `e2e-controlplane`'s setup with `WITH_CONTROLPLANE: "true"`,
 `CONTROLPLANE_OPERATORS: external`, and `WITH_CONTROLPLANE_CR: "false"`, but
 leaves `CONTROLPLANE_NAME` at its default: the OpenBao bootstrap only seeds the
-managed-mode admin-password path, which the External ControlPlanes — in their own
-namespaces, authenticating from user-supplied Secrets — never read, and the suite
+managed-mode admin-password path, which the External ControlPlanes (in their own
+namespaces, authenticating from user-supplied Secrets) never read, and the suite
 asserts their own per-CR OpenBao paths are never-seeded. It loads the
-`keystone:2025.2` and `tempest:2025.2` service images (but **not** `horizon:2025.2`
-— External mode never runs a Horizon workload; the horizon-operator is deployed
+`keystone:2025.2` and `tempest:2025.2` service images (but **not** `horizon:2025.2`:
+External mode never runs a Horizon workload; the horizon-operator is deployed
 only for its CRD) and runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"` so a
 broken deployment fails the build instead of the suite skipping.
 
@@ -900,7 +901,7 @@ configuration, Keystone CRs, and K8s service names. Pulls pre-built images from
 GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]`
-**Condition:** Runs only when `has-e2e-operators == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled — tempest is the last E2E job in the chain.
+**Condition:** Runs only when `has-e2e-operators == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled: tempest is the last E2E job in the chain.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 **Matrix strategy:**
@@ -949,7 +950,7 @@ matrix over each E2E target package (`keystone-operator`, `keystone`,
 `c5c3-operator`, `tempest`) after every consumer that might still pull the images
 has finished. The
 `always() && needs.build-e2e-images.result == 'success'` condition means the
-cleanup runs on success, failure, cancelled, or skipped consumer outcomes — but
+cleanup runs on success, failure, cancelled, or skipped consumer outcomes, but
 only when `build-e2e-images` actually pushed something.
 
 **Dependencies:** `needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]`
@@ -965,7 +966,7 @@ Timeout: 10 minutes.
 
 Builds operator container images per platform on native runners and pushes each
 single-arch image by digest. Runs only on push events (main branch or
-v* tags) — skipped on pull requests. The multi-arch manifest list and final tags are
+v* tags); skipped on pull requests. The multi-arch manifest list and final tags are
 assembled by the subsequent `merge-operator-images` job.
 
 Publish-only-on-merge: the merged commit's PR was already green, so the E2E suite is
@@ -1038,7 +1039,7 @@ Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`.
 ### helm-push
 
 Packages and pushes operator Helm charts to the GHCR OCI registry.
-Runs only on push events — skipped on pull requests. Like `build-and-push`, this is
+Runs only on push events; skipped on pull requests. Like `build-and-push`, this is
 publish-only-on-merge: the chart is packaged and pushed for every changed operator on
 push without re-running the E2E suite.
 

@@ -28,8 +28,8 @@ and the c5c3-operator (on top of the keystone-operator, OpenBao, ESO, MariaDB,
 and Memcached stack). The default kind E2E wiring does not install these, so
 every suite follows the repo's **belt-and-braces presence-guard pattern**: a
 runtime guard probes for the required CRDs, the OpenBao
-`ClusterSecretStore`, and — for the suites whose ControlPlanes must actually
-converge — **running keystone-operator pods**, exiting with a SKIP line when
+`ClusterSecretStore`, and (for the suites whose ControlPlanes must actually
+converge) **running keystone-operator pods**, exiting with a SKIP line when
 any of it is absent. The pod probe matters because CRDs alone no longer imply
 the stack: the `e2e-operator` c5c3 matrix leg installs every CRD the c5c3
 controller watches (its informers cannot start otherwise) without deploying
@@ -38,7 +38,7 @@ Because Chainsaw has no step-level skip and the shared config runs with
 `failFast: true`, the guard and all assertions live in a single script step.
 
 Setting `E2E_REQUIRE_CONTROLPLANE_STACK=true` flips the guard from SKIP to a
-hard failure. The dedicated `e2e-controlplane` CI job does exactly that: it
+hard failure. The dedicated `e2e-controlplane` CI job does that: it
 deploys keystone-operator, c5c3-operator, and K-ORC as local dev images
 (`CONTROLPLANE_OPERATORS=external`), seeds the per-CR OpenBao paths
 (`CONTROLPLANE_NAME=controlplane-keystone`), and runs the
@@ -198,7 +198,7 @@ Asserts the opt-in per-service
 [dedicated backing services](../c5c3/controlplane-crd.md#dedicatedbackingservices):
 a `ControlPlane` whose Keystone service takes a dedicated database **and** cache
 and whose Horizon dashboard takes a dedicated cache. It proves a dedicated
-instance carries the shared block's lifecycle — it is provisioned as a `MariaDB` /
+instance carries the shared block's lifecycle: it is provisioned as a `MariaDB` /
 `Memcached` child, owned with a **controller owner reference and
 `blockOwnerDeletion`** (the mechanism that tears it down with the ControlPlane),
 sized from its **own** `replicas` / `storageSize`, and gates `InfrastructureReady`
@@ -206,14 +206,14 @@ so the consuming service waits for the database it actually talks to.
 
 The fixture's **shared** block is brownfield, so the ControlPlane provisions
 nothing for it: the exact set of `MariaDB` / `Memcached` CRs in the namespace *is*
-the dedicated set, which the suite asserts as an exact set rather than a superset
-— the proof that a service which opted out no longer gets the shared instance.
+the dedicated set, which the suite asserts as an exact set rather than a superset:
+the proof that a service which opted out no longer gets the shared instance.
 
 Unlike the sibling suites it runs in **chainsaw's ephemeral namespace** with a
 ControlPlane of its own (`cp`) rather than reusing the canonical `openstack` one.
 Two contracts rule that out: the webhook permits one ControlPlane per namespace,
 and the shared↔dedicated presence flip is frozen on a live CR, so the dedicated
-declaration cannot be patched onto the pre-existing shared ControlPlane — it has
+declaration cannot be patched onto the pre-existing shared ControlPlane: it has
 to be created with it.
 
 The suite's presence guard probes every CRD the ControlPlane controller
@@ -224,10 +224,10 @@ elected leader dies on the cache-sync timeout and the reconciler this suite
 drives never runs at all.
 
 The projected-child assertions (the Keystone child pointing at the dedicated
-instances, with `credentialsMode: Static`) are deliberately not part of the
+instances, with `credentialsMode: Static`) are not part of the
 suite: reaching the Keystone projection requires the DB-credential and
 admin-password machinery to converge, which needs OpenBao seeded for the
-ControlPlane's namespace — and this suite runs in an ephemeral namespace by
+ControlPlane's namespace, and this suite runs in an ephemeral namespace by
 design. They are hard-asserted in the envtest scenario
 `TestIntegration_DedicatedBackingServices`, which runs against the real CRD
 schema and webhook on every PR.
@@ -245,8 +245,8 @@ the placement and lifecycle contract on a live cluster:
 - the `Managed` namespace carries the ownership labels plus
   `app.kubernetes.io/managed-by`; the `External` namespace is left **unlabelled**;
 - the one shared `spec.infrastructure` block materializes its backing services in
-  **each service's** namespace — a `MariaDB` and `Memcached` in the Keystone
-  namespace, a `Memcached` in the Horizon namespace — each carrying the ownership
+  **each service's** namespace (a `MariaDB` and `Memcached` in the Keystone
+  namespace, a `Memcached` in the Horizon namespace) each carrying the ownership
   labels and **no owner reference** (Kubernetes forbids a cross-namespace one),
   and nothing in the ControlPlane's own namespace;
 - a per-tenant `openbao-tenant-store` `SecretStore` is provisioned in every
@@ -289,12 +289,12 @@ cross-tenant isolation. Running in the ephemeral test namespace, the suite:
 1. runs `setup-eso-tenant.sh <namespace>`, which provisions the tenant
    `ServiceAccount` (`eso-tenant-auth`), the cert-manager mTLS `Certificate`, and
    the namespaced `SecretStore` (`openbao-tenant-store`);
-2. asserts that `SecretStore` reaches `Ready=True` — proving the `eso-tenant`
+2. asserts that `SecretStore` reaches `Ready=True`: proving the `eso-tenant`
    auth role, the `eso-tenant` templated policy, and mTLS actually authenticate
    the per-tenant identity against OpenBao;
 3. mints a token from the tenant's `eso-tenant-auth` ServiceAccount, logs in as
    the `eso-tenant` role, and proves the token can read **its own** namespace's
-   Keystone key path but is **denied** on a foreign namespace's path — the
+   Keystone key path but is **denied** on a foreign namespace's path: the
    templated-policy isolation that replaces the naming convention;
 4. logs in as the shared `eso-management` role and proves it is **denied** both
    read and write on a Keystone key path (#606 retired the `push-*` write
@@ -309,15 +309,15 @@ cross-tenant isolation. Running in the ephemeral test namespace, the suite:
    the first `PushSecret` creates the leaf and ESO stamps
    `managed-by=external-secrets` itself (the managed-by guard's inverse), a
    read-back `ExternalSecret` materialises the exact value, and
-   `DeletionPolicy: Delete` purges the leaf via the `eso-tenant` delete grant —
+   `DeletionPolicy: Delete` purges the leaf via the `eso-tenant` delete grant,
    with zero seeded state and nothing per-CP beyond the one-time cluster
    bootstrap.
 
 The ControlPlane→Keystone/Horizon projection and the `SecretsReady` gating are
 covered by the c5c3 operator integration test
 (`TestIntegration_SecretStoreRefProjectedAndGated`), so this suite focuses on the
-behaviour only a live OpenBao can prove. It SKIPs cleanly when the stack — or the
-`eso-tenant` role (bootstrap predating #605) — is absent.
+behaviour only a live OpenBao can prove. It SKIPs cleanly when the stack, or the
+`eso-tenant` role (bootstrap predating #605), is absent.
 
 ## File Layout
 
@@ -371,13 +371,13 @@ tests/e2e/c5c3/
 
 ### federated-controlplane
 
-`tests/e2e-controlplane-sso/` — the end-user SSO experience the ControlPlane
+`tests/e2e-controlplane-sso/`: the end-user SSO experience the ControlPlane
 drives from its Keystone child's identity backends.
 
 A **separate suite and a separate CI job** (`e2e-controlplane-sso`), not an
 extension of `full-controlplane-keystone`: the identity-provider and directory
 fixtures would otherwise lengthen that chain and couple its credential
-assertions to federation, and — decisively — the ControlPlane webhook permits
+assertions to federation, and (decisively) the ControlPlane webhook permits
 one ControlPlane per namespace while `openstack-gw` sets
 `allowedRoutes.namespaces.from: Same`. The two suites can share neither the
 `openstack` namespace nor the Gateway, so each needs its own kind cluster.
@@ -405,7 +405,7 @@ Keycloak through the gateway instead would need a split-horizon DNS rewrite,
 since `mod_auth_openidc` must reach the same issuer from inside the cluster.
 The browser is therefore the Keystone pod (the image ships `python3`, no
 `curl`), dialling the Envoy data-plane ClusterIP with the gateway hostname as
-SNI and `Host`, so traffic traverses Envoy exactly as a real browser's would.
+SNI and `Host`, so traffic traverses Envoy as a real browser's would.
 
 The ControlPlane CR pins `services.keystone.federationProxyImage.tag: dev` so
 the suite exercises the `mod_auth_openidc` sidecar built by the pipeline, not

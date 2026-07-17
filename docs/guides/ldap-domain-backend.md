@@ -37,8 +37,8 @@ examples below is one that devstack produces.
   seeded fixture directory; on other clusters, substitute your own directory.
 - **Service users stay SQL-backed.** The backend is read-only by default,
   so OpenStack service accounts (and the bootstrap admin) must remain in the
-  SQL-backed `Default` domain — the CRD hard-rejects attaching a backend to
-  `Default` for exactly this reason. Plan for humans in the LDAP domain and
+  SQL-backed `Default` domain: the CRD hard-rejects attaching a backend to
+  `Default` for this reason. Plan for humans in the LDAP domain and
   services in `Default`.
 
 ## Step 1 — Deploy the seeded OpenLDAP fixture (kind devstack)
@@ -62,7 +62,7 @@ This ships, all in the `openstack` namespace:
   `cn=admin,dc=planetexpress,dc=com` / `GoodNewsEveryone`.
 
 On a non-kind cluster, skip this step and point the CR (Step 3) at your own
-directory instead — every value below is one this fixture produces.
+directory instead: every value below is one this fixture produces.
 
 ## Step 2 — Create the bind credentials Secret
 
@@ -75,7 +75,7 @@ kubectl create secret generic corp-ldap-bind -n openstack \
   --from-literal=password='GoodNewsEveryone'
 ```
 
-Rotating this Secret later re-renders the per-domain config automatically —
+Rotating this Secret later re-renders the per-domain config automatically:
 the operator watches it.
 
 ::: tip On the kind devstack
@@ -115,7 +115,7 @@ spec:
       mailAttribute: mail
 ```
 
-Pick `mode: Adopt` instead when the domain already exists in Keystone — Adopt
+Pick `mode: Adopt` instead when the domain already exists in Keystone: Adopt
 resolves it by name and never mutates it (adopted domains are also always
 retained on deletion).
 
@@ -160,7 +160,7 @@ openstack --os-username professor --os-password professor \
 ```
 
 Without the openstack CLI, the same flow works with two `curl`/`urllib`
-calls against `POST /v3/auth/tokens` — see step 4 of
+calls against `POST /v3/auth/tokens`; see step 4 of
 `tests/e2e/keystone/ldap-domain-backend/chainsaw-test.yaml` for a
 copy-pasteable in-cluster variant.
 

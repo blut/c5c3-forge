@@ -74,13 +74,13 @@ non-zero on any failure with a descriptive error message.
 
 ### `make teardown-infra`
 
-Deletes the kind cluster by running `hack/teardown-infra.sh`. Idempotent —
+Deletes the kind cluster by running `hack/teardown-infra.sh`. Idempotent:
 succeeds silently if no cluster exists. Always exits 0.
 
 ### `make install-test-deps`
 
 Installs pinned versions of chainsaw, flux, kind, and kubectl by running
-`hack/install-test-deps.sh`. Idempotent — skips tools already installed at the
+`hack/install-test-deps.sh`. Idempotent: skips tools already installed at the
 correct version. Installs to `$INSTALL_DIR` (default: `~/.local/bin`).
 
 ### `make e2e`
@@ -198,7 +198,7 @@ strategic merge patches to reduce resource requirements for a single-node kind c
 | Replicas | 3 | 1 |
 
 Other operators (cert-manager, mariadb-operator, ESO, memcached-operator) are not
-patched — they are single-replica or stateless by default.
+patched: they are single-replica or stateless by default.
 
 ## Environment Variables
 
@@ -212,7 +212,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |
-| `OPENBAO_NAMESPACE` | `openbao-system` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
+| `OPENBAO_NAMESPACE` | `openbao-system` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is ignored: chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
 | `INSTALL_DIR` | `~/.local/bin` | Directory for `install-test-deps.sh` to install tools |
 | `WITH_CONTROLPLANE` | `false` | When `true`, the c5c3 `ControlPlane` provisions MariaDB/Memcached in managed mode: deploy-infra skips the shared MariaDB/Memcached CRs and seeds the per-CR OpenBao admin-password paths instead |
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends keystone-operator, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge); `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
@@ -230,8 +230,8 @@ HELMRELEASE_TIMEOUT=600 make deploy-infra
 
 The `e2e-infra` job in `.github/workflows/ci.yaml` runs only on pull requests
 (`github.event_name == 'pull_request'`) and only when the `e2e-infra` path filter
-of the `changes` job matches. It depends only on `changes` — not on the `lint` or
-`test` jobs — so it starts as soon as the path filters are resolved.
+of the `changes` job matches. It depends only on `changes` (not on the `lint` or
+`test` jobs), so it starts as soon as the path filters are resolved.
 
 **Job steps:**
 

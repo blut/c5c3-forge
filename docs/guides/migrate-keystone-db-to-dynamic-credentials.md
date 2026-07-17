@@ -44,7 +44,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 Follow that tutorial through to its final **Verify** step. On this devstack the
 ControlPlane is `controlplane` in `openstack`, so its projected Keystone is
 `controlplane-keystone` and its DB-credential Secret is
-`controlplane-keystone-db-credentials` — the names the migration below manages.
+`controlplane-keystone-db-credentials`: these are the names the migration below manages.
 :::
 
 - The OpenBao `database` secrets engine is mounted at `database/mariadb` (the
@@ -132,8 +132,8 @@ the generator. Watch for:
   `OS_DATABASE__CONNECTION` env var, which only takes effect on a Pod restart).
 
 Because the engine's GRANT overlaps any pre-existing operator-provisioned
-`User`/`Grant` from the static deployment, Keystone keeps serving throughout —
-the rolling restart (protected by the Keystone PodDisruptionBudget) simply moves
+`User`/`Grant` from the static deployment, Keystone keeps serving throughout.
+The rolling restart (protected by the Keystone PodDisruptionBudget) simply moves
 it onto an engine-issued login. This is the no-downtime property.
 
 ### 5. Retire the static credential
@@ -171,11 +171,11 @@ to remove the generator objects.
 - **Rotation churn vs. lease headroom:** because the DSN is consumed via an
   environment variable, a rotated engine credential only takes effect on a Pod
   restart, so Keystone rolls each time the ExternalSecret re-issues the credential
-  (a rotating dynamic credential means every refresh is a *new* credential — there
+  (a rotating dynamic credential means every refresh is a *new* credential; there
   is no stable value to renew in place). The defaults balance two concerns: the
   24h refresh interval keeps the roll cadence to at most once a day, while the 48h
   `default_ttl` keeps a 24h gap (`default_ttl` − refresh) so the operator has a
-  full day to roll the pods before the previous, still-in-use lease is revoked —
+  full day to roll the pods before the previous, still-in-use lease is revoked:
   long enough that a stalled rollout pages on-call before it can become an outage.
   Raise `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` (and the operator's refresh
   interval) further to trade churn against lease headroom; the PodDisruptionBudget
@@ -185,7 +185,7 @@ to remove the generator objects.
   lifetime is `min(lease TTL, minting token TTL)`. The `keystone-db` auth role
   therefore pins its token TTLs to `DB_CREDS_MAX_TTL` (72h). When raising
   `DB_CREDS_*` beyond that, raise the role's `token_ttl`/`token_max_ttl` in
-  lockstep — a shorter token silently drops the ephemeral MySQL user under a
+  lockstep: a shorter token silently drops the ephemeral MySQL user under a
   running Keystone long before the advertised lease end.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects
   *new* connections. Already-open sessions of a dropped user may persist until
@@ -205,9 +205,9 @@ to remove the generator objects.
 ## Tested by
 
 The dynamic, engine-issued per-ControlPlane database credential this guide
-migrates to — the `VaultDynamicSecret`, the owned
+migrates to (the `VaultDynamicSecret`, the owned
 `controlplane-keystone-db-credentials` ExternalSecret, and the transient
-engine-issued login — is asserted on the CI e2e kind cluster by this chainsaw
+engine-issued login) is asserted on the CI e2e kind cluster by this chainsaw
 suite:
 
 ```bash
